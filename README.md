@@ -40,25 +40,7 @@ HUSH 2.2.0 is a functional development foundation, not yet a production-complete
 | **Audio recording** | Experimental capture and WAV writing[span_24](start_span)[span_24](end_span)[span_25](start_span)[span_25](end_span) |
 | **MIDI** | Event model and bounded queue; no operating-system MIDI I/O[span_26](start_span)[span_26](end_span)[span_27](start_span)[span_27](end_span) |
 | **Plugin hosting** | In-process DSP interface; no third-party binary plugin host[span_28](start_span)[span_28](end_span)[span_29](start_span)[span_29](end_span) |
-| **Windows/macOS interfaces** | Not verified or complete[span_30](start_span)[span_30](end_span)[span_31](start_span)[span_31](end_span) |
-
----
-
-## Current-Build Image Gallery
-
-### Arrangement & Editing
-![Arrangement and Timeline](docs/images/arrangement.png)  
-*Timeline, clips and waveform editing[span_32](start_span)[span_32](end_span)[span_33](start_span)[span_33](end_span)*
-
-### Mixer & Routing
-![Mixer and Meters](docs/images/mixer.png)  
-*Channel strips, gain and peak meters[span_34](start_span)[span_34](end_span)[span_35](start_span)[span_35](end_span)*
-
-### DSP & Mastering
-![DSP Interface](docs/images/dsp-mastering.png)  
-*Real-time processing interface[span_36](start_span)[span_36](end_span)[span_37](start_span)[span_37](end_span)*
-
----
+| **Windows/macOS interfaces** | Not verified or complete[span_30](start_span)[span_30](end_span)[span_31](start_span)[span_31](end_span) 
 
 ## Architecture
 
