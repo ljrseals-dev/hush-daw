@@ -44,7 +44,7 @@ HUSH 2.2.0 is a functional development foundation, not yet a production-complete
 
 ## Architecture
 
-The current processing flow can be summarized as follows[span_38](start_span)[span_38](end_span)[span_39](start_span)[span_39](end_span):
+The current processing flow can be summarized as follows:
 
 ```mermaid
 flowchart TD
