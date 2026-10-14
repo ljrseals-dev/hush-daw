@@ -14,7 +14,7 @@ A C++20 audio workstation project focused on local audio processing, session edi
 
 HUSH is an offline-first audio workstation under active deve. Version 2.2.0 brings together a WAV/session core, clip-editing APIs, offline audio rendering, a real-time mixer core, and an early Linux/X11 graphical interface.
 
-The project's engineering priorities are explicit DSP behavior, predictable audio processing, bounded real-time operations, and reproducible validation[span_6](start_span)[span_6](end_span)[span_7](start_span)[span_7](end_span).
+The project's engineering priorities are explicit DSP behavior, predictable audio processing, bounded real-time operations, and reproducible validation.
 
 ---
 
