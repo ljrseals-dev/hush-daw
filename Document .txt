@@ -1,0 +1,50 @@
+# INCIDENT NOTE — untrusted artifacts expected (2026-10-14)
+
+## Situation
+- Maintainer is operating from a mobile device; full local build/verification is limited.
+- Untrusted parties ("phreakers") are believed to have terminal access to a directory
+  associated with this project and may attempt to populate it with ZIP files.
+- Public repo: github.com/ljrseals-dev/hush-daw (created 2026-10-14).
+
+## Policy until further notice
+1. **No ZIP, archive, binary, patch, or script that appears without a matching commit
+   signed by the maintainer is trusted.** Treat every unexpected file as hostile.
+2. **No merge, no release, no tag** based on files that were not produced by a known
+   build on a known toolchain.
+3. **`Releases/11-13/` is frozen.** The existing `HUSH-2.2.0-release-gate.zip` and its
+   SHA-256 remain as originally committed. Any new file in that directory is suspect
+   until hashed and matched against `SOURCE_SHA256SUMS.txt`.
+4. **CI is the only automated authority.** A workflow run against a specific commit
+   is evidence; a ZIP uploaded to the repo is not.
+5. If a file appears that is not in `SOURCE_SHA256SUMS.txt`, do not open, extract,
+   execute, or import it. Record its name and hash, then delete it.
+
+## What to check when a new file appears
+- `sha256sum <file>` — compare against `SOURCE_SHA256SUMS.txt` and
+  `HUSH-2.1.0.baseline.sha256.txt`.
+- `git log --show-signature -- <path>` — confirm who committed it and when.
+- `git diff <last-known-good>..HEAD --stat` — confirm the change set is what you expect.
+- If any of these are unclear, revert to the last known-good commit and stop.
+
+## Known-good reference points
+- 2.2.0 manifest: `SOURCE_SHA256SUMS.txt`
+- 2.1.0 baseline (DawChecker plugin): `HUSH-2.1.0.baseline.sha256.txt`
+- Fast release gate: `scripts/release_gate.sh`, evidence in `evidence/release_gate/`
+- Fork diff: `third_party/dawchecker_hardened/CHANGES.diff`
+- Release decision: **HOLD** (see `RELEASE_GATE.md`)
+
+## Not claimed
+- No integrity guarantee for any file added after the timestamps in `SOURCE_SHA256SUMS.txt`.
+- No protection against a collaborator or token with write access.
+- No protection against a force-push that rewrites history.
+
+## Immediate actions
+- [ ] Confirm who has write access to `ljrseals-dev/hush-daw`.
+- [ ] Enable branch protection on `main`: require PRs, require CI, disallow force-push.
+- [ ] Enable 2FA on the GitHub account.
+- [ ] Revoke any personal access token that has been used from the mobile device.
+- [ ] Run the CI workflow once on a known-good commit and archive the run URL.
+- [ ] If a suspicious file appears, record name + SHA-256 here before deleting it.
+
+## Change log
+- 2026-10-14: initial note.
