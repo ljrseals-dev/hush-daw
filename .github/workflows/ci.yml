@@ -1,0 +1,45 @@
+name: HUSH CI & Release Gate Pipeline
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build-and-gate:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Install Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cmake g++ libx11-dev libportaudio2 portaudio19-dev xvfb ctest
+
+    - name: Configure CMake (Hardened Build)
+      run: |
+        cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+          -DHUSH_WARNINGS_AS_ERRORS=ON \
+          -DHUSH_BUILD_X11_GUI=ON \
+          -DHUSH_ENABLE_PORTAUDIO=ON
+
+    - name: Build Codebase
+      run: cmake --build build --parallel $(nproc)
+
+    - name: Run CTest Unit & Module Suites (Network-Isolated)
+      run: ctest --test-dir build --output-on-failure
+
+    - name: Run Detector Calibration
+      run: |
+        ctest --test-dir build --output-on-failure -R hush_detector_calibration
+
+    - name: Run Headless X11 GUI Smoke Test (Xvfb)
+      run: |
+        xvfb-run -a scripts/smoke_test.sh
+
+    - name: Execute Release Gate Verification
+      run: |
+        scripts/release_gate.sh
