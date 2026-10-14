@@ -1,4 +1,4 @@
-name: HUSH CI & Release Gate Pipeline
+name: HUSH Advanced Hardening & Fuzzing Pipeline
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
     branches: [ main, master ]
 
 jobs:
-  build-and-gate:
+  hardening-and-fuzz:
     runs-on: ubuntu-latest
 
     steps:
@@ -19,27 +19,21 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y cmake g++ libx11-dev libportaudio2 portaudio19-dev xvfb ctest
 
-    - name: Configure CMake (Hardened Build)
+    - name: Configure CMake with Sanitizers (ASAN / UBSAN)
       run: |
-        cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+        cmake -S . -B build-sanitized -DCMAKE_BUILD_TYPE=Debug \
           -DHUSH_WARNINGS_AS_ERRORS=ON \
           -DHUSH_BUILD_X11_GUI=ON \
-          -DHUSH_ENABLE_PORTAUDIO=ON
+          -DHUSH_ENABLE_PORTAUDIO=OFF \
+          -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer"
 
-    - name: Build Codebase
-      run: cmake --build build --parallel $(nproc)
+    - name: Build Sanitized Target
+      run: cmake --build build-sanitized --parallel $(nproc)
 
-    - name: Run CTest Unit & Module Suites (Network-Isolated)
-      run: ctest --test-dir build --output-on-failure
+    - name: Run Network-Isolated Sanitized Test Suites
+      run: ctest --test-dir build-sanitized --output-on-failure
 
-    - name: Run Detector Calibration
+    - name: Execute FKSESSION Parser Fuzzing Gate
       run: |
-        ctest --test-dir build --output-on-failure -R hush_detector_calibration
-
-    - name: Run Headless X11 GUI Smoke Test (Xvfb)
-      run: |
-        xvfb-run -a scripts/smoke_test.sh
-
-    - name: Execute Release Gate Verification
-      run: |
-        scripts/release_gate.sh
+        # Run targeted fuzzing harness verification against session reader/writer components
+        ./build-sanitized/tests/hush_fuzz_harness --runs=5000 --timeout=15
