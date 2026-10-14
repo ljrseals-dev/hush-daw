@@ -4,7 +4,7 @@
 
 *Quiet by design. Precise by engineering.*
 
-A C++20 audio workstation project focused on local audio processing, session editing, deterministic rendering, and an extensible DSP architecture[span_0](start_span)[span_0](end_span)[span_1](start_span)[span_1](end_span).
+A C++20 audio workstation project focused on local audio processing, session editing, deterministic rendering, and an extensible DSP architecture.
 
 [Current Build](#current-build) · [Architecture](#architecture) · [Roadmap](#roadmap) · [Build Instructions](#build-from-source) · [Release Gate](#validation-and-release-gate)
 
