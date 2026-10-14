@@ -26,7 +26,7 @@ The project's engineering priorities are explicit DSP behavior, predictable audi
 
 ## Current Build
 
-HUSH 2.2.0 is a functional development foundation, not yet a production-complete DAW[span_8](start_span)[span_8](end_span)[span_9](start_span)[span_9](end_span).
+HUSH 2.2.0 is a functional development foundation, not yet a production-complete DAW.
 
 | Component | Current Status |
 | :--- | :--- |
