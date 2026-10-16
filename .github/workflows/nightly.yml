@@ -1,0 +1,104 @@
+name: HUSH Nightly Build
+
+on:
+  schedule:
+    # Nightly at 02:30 UTC.
+    - cron: "30 2 * * *"
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/nightly.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hush-nightly-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux-nightly:
+    name: Linux x86_64 build, tests, and artifact
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      UPSTREAM_REPO: ljrseals-dev/hush-processor
+      UPSTREAM_COMMIT: 0b0bd3b7416e51651661feb2de4596f085bd1e25
+      UPSTREAM_BLOB_SHA: 423de9eaa8b94fceb8375de6aa1b3166546cc6ca
+      UPSTREAM_ARCHIVE: HUSH-2.2.0-reconciled.zip
+
+    steps:
+      - name: Checkout HUSH nightly configuration
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build unzip git pkg-config \
+            libx11-dev libasound2-dev libpulse-dev portaudio19-dev
+
+      - name: Fetch pinned source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          url="https://raw.githubusercontent.com/${UPSTREAM_REPO}/${UPSTREAM_COMMIT}/${UPSTREAM_ARCHIVE}"
+          curl --fail --location --retry 3 --retry-delay 2 "$url" -o upstream-source.zip
+          actual="$(git hash-object upstream-source.zip)"
+          echo "Expected Git blob: ${UPSTREAM_BLOB_SHA}"
+          echo "Actual Git blob:   ${actual}"
+          test "$actual" = "${UPSTREAM_BLOB_SHA}"
+          unzip -tq upstream-source.zip
+          mkdir source
+          unzip -q upstream-source.zip -d source
+          cmake_file="$(find source -name CMakeLists.txt -type f -print -quit)"
+          test -n "$cmake_file"
+          echo "CMAKE_SOURCE_DIR=$(dirname "$cmake_file")" >> "$GITHUB_ENV"
+          echo "UPSTREAM_ARCHIVE_SHA256=$(sha256sum upstream-source.zip | awk '{print $1}')" >> "$GITHUB_ENV"
+
+      - name: Configure Release build
+        run: |
+          cmake -S "$CMAKE_SOURCE_DIR" -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DHUSH_WARNINGS_AS_ERRORS=ON \
+            -DHUSH_BUILD_X11_GUI=OFF \
+            -DHUSH_ENABLE_PORTAUDIO=OFF
+
+      - name: Compile
+        run: cmake --build build --parallel 2
+
+      - name: Run test suite
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Prepare nightly package and provenance
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p nightly-package
+          cp upstream-source.zip nightly-package/
+          find build -maxdepth 3 -type f -executable -print -exec cp --parents {} nightly-package/ \; || true
+          cat > nightly-package/NIGHTLY-MANIFEST.txt <<EOF
+          Product: HUSH DAW
+          Channel: nightly (not a stable release)
+          Built from hush-processor commit: ${UPSTREAM_COMMIT}
+          Upstream Git blob SHA-1: ${UPSTREAM_BLOB_SHA}
+          Upstream source archive SHA-256: ${UPSTREAM_ARCHIVE_SHA256}
+          HUSH DAW repository commit: ${GITHUB_SHA}
+          Workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          Build type: Release
+          Platform: Ubuntu 24.04 x86_64
+          Validation: CMake build and CTest passed
+          Hardware audio I/O: not validated by this CI runner
+          EOF
+          sha256sum nightly-package/upstream-source.zip nightly-package/NIGHTLY-MANIFEST.txt > nightly-package/SHA256SUMS.txt
+
+      - name: Upload nightly artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: HUSH-nightly-${{ github.run_number }}-${{ github.sha }}
+          path: nightly-package/
+          if-no-files-found: error
+          retention-days: 14
