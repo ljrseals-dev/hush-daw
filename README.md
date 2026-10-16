@@ -6,7 +6,7 @@
 
 A C++20 audio workstation project focused on local audio processing, session editing, deterministic rendering, and an extensible DSP architecture.
 
-[Current Build](#current-build) · [Architecture](#architecture) · [Roadmap](#roadmap) · [Build Instructions](#build-from-source) · [Release Gate](#validation-and-release-gate)
+[Current Build](#current-build) · [Architecture](#architecture) · [Tier 1 Engine Integration](docs/TIER1_HUSH_CORE.md) · [Roadmap](#roadmap) · [Build Instructions](#build-from-source) · [Release Gate](#validation-and-release-gate)
 
 ---
 
@@ -41,6 +41,14 @@ HUSH 2.2.0 is a functional development foundation, not yet a production-complete
 | **MIDI** | Event model and bounded queue; no operating-system MIDI I/O[span_26](start_span)[span_26](end_span)[span_27](start_span)[span_27](end_span) |
 | **Plugin hosting** | In-process DSP interface; no third-party binary plugin host[span_28](start_span)[span_28](end_span)[span_29](start_span)[span_29](end_span) |
 | **Windows/macOS interfaces** | Not verified or complete[span_30](start_span)[span_30](end_span)[span_31](start_span)[span_31](end_span) 
+
+## Tier 1 Engine Integration
+
+HUSH now has a documented integration index for the three foundational engine packages published by [hush-core](https://github.com/ljrseals-dev/hush-core): immersive rendering, MIDI-to-score export, and video probing/thumbnails.
+
+**[Open the Tier 1 integration page](docs/TIER1_HUSH_CORE.md)** for package downloads, intended build targets, DAW connection points, and verification gates.
+
+These are currently **linked references, not yet source-integrated or build-verified targets**. The advanced Hush Core model/roadmap remains Tier 3 and is not represented as complete.
 
 ## Architecture
 
