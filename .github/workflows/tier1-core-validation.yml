@@ -1,0 +1,91 @@
+name: HUSH Core Tier 1 validation
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/tier1-core-validation.yml"
+      - "docs/TIER1_HUSH_CORE.md"
+      - "README.md"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/tier1-core-validation.yml"
+      - "docs/TIER1_HUSH_CORE.md"
+      - "README.md"
+
+permissions:
+  contents: read
+
+jobs:
+  validate-engine-packages:
+    name: Validate ${{ matrix.engine }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - engine: hush-render
+            archive: hush-render-complete.zip
+          - engine: hush-score
+            archive: hush-score-cli.zip
+          - engine: hush-probe
+            archive: hush-probe-complete.zip
+
+    steps:
+      - name: Check out HUSH-DAW integration metadata
+        uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build g++ unzip
+
+      - name: Download and inspect upstream package
+        env:
+          ARCHIVE: ${{ matrix.archive }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/hush-core" "$RUNNER_TEMP/hush-core-src"
+          url="https://github.com/ljrseals-dev/hush-core/raw/refs/heads/main/$ARCHIVE"
+          curl --fail --location --retry 3 --output "$RUNNER_TEMP/hush-core/$ARCHIVE" "$url"
+          file "$RUNNER_TEMP/hush-core/$ARCHIVE"
+          unzip -t "$RUNNER_TEMP/hush-core/$ARCHIVE"
+          unzip -q "$RUNNER_TEMP/hush-core/$ARCHIVE" -d "$RUNNER_TEMP/hush-core-src"
+          echo "Archive entries:"
+          unzip -l "$RUNNER_TEMP/hush-core/$ARCHIVE"
+          echo "CMake projects:"
+          find "$RUNNER_TEMP/hush-core-src" -name CMakeLists.txt -print
+
+      - name: Configure, compile, and run available tests
+        run: |
+          set -euo pipefail
+          src="$RUNNER_TEMP/hush-core-src"
+          mapfile -t cmake_files < <(find "$src" -name CMakeLists.txt -not -path '*/build/*' -print | sort)
+          if [ "${#cmake_files[@]}" -eq 0 ]; then
+            echo "::error::No CMakeLists.txt found in ${{ matrix.archive }}; inspect the archive and update the integration workflow."
+            exit 1
+          fi
+
+          index=0
+          for cmake_file in "${cmake_files[@]}"; do
+            project_dir="$(dirname "$cmake_file")"
+            build_dir="$RUNNER_TEMP/build-${{ matrix.engine }}-$index"
+            echo "::group::Configure ${{ matrix.engine }} from $project_dir"
+            cmake -S "$project_dir" -B "$build_dir" -G Ninja -DCMAKE_BUILD_TYPE=Release
+            cmake --build "$build_dir" --parallel 2
+            ctest --test-dir "$build_dir" --output-on-failure
+            echo "::endgroup::"
+            index=$((index + 1))
+          done
+
+      - name: Upload package inventory
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.engine }}-archive-inventory
+          path: |
+            ${{ runner.temp }}/hush-core/
+            ${{ runner.temp }}/hush-core-src/
+          if-no-files-found: ignore
