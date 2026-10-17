@@ -1,0 +1,21 @@
+Here’s the actual HUSH 2.2.0 GUI running from the compiled executable included in the fully integrated source ZIP — not a concept mockup.
+
+![HUSH 2.2.0 integrated GUI screenshot](https://chatgpt.com/backend-api/estuary/content?id=file_00000000946881f59b10f6d7e802c1a1\&fn=HUSH-2.2.0-GUI-screenshot.png\&cd=attachment\&ts=497836\&p=fs\&cid=1\&sig=2548718b5b1c29ac23826252f2dfbda08358eedf239560e7912eef7f4e1e6107\&v=0)
+
+Open or download the full-size GUI screenshot
+
+### What’s integrated in this view
+
+* Transport: Play, Stop, and Record controls.
+
+* Multitrack arrangement: Four demo tracks with audio clips and timeline positions.
+
+* Track controls: Gain readouts and Live/Mute controls.
+
+* Output monitoring: Peak meter.
+
+* Mixer area: Selected-track gain adjustment.
+
+* Session editing: The source also includes save, undo, and redo keyboard shortcuts.
+
+Important visual note: The screenshot reflects the current implementation, including a small overlap between the arrangement headings and transport bar. It is a functional GUI snapshot, not a claim that every planned DAW feature is finished.
