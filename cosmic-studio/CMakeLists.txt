@@ -15,7 +15,12 @@ endif()
 
 if(HUSH_COSMIC_BUILD_TESTS)
   enable_testing()
+
   add_executable(hush_cosmic_bridge_test tests/bridge_test.cpp)
   target_link_libraries(hush_cosmic_bridge_test PRIVATE hush_cosmic_bridge)
   add_test(NAME hush_cosmic_bridge_contract COMMAND hush_cosmic_bridge_test)
+
+  add_executable(hush_cosmic_processor_adapter_test tests/processor_adapter_test.cpp)
+  target_link_libraries(hush_cosmic_processor_adapter_test PRIVATE hush_cosmic_bridge)
+  add_test(NAME hush_cosmic_processor_adapter_contract COMMAND hush_cosmic_processor_adapter_test)
 endif()
