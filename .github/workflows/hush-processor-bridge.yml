@@ -1,0 +1,23 @@
+name: Hush Processor Bridge
+on:
+  push:
+    paths:
+      - "integration/hush-processor-bridge/**"
+      - ".github/workflows/hush-processor-bridge.yml"
+  pull_request:
+    paths:
+      - "integration/hush-processor-bridge/**"
+      - ".github/workflows/hush-processor-bridge.yml"
+  workflow_dispatch:
+
+jobs:
+  bridge-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S integration/hush-processor-bridge -B build/hush-processor-bridge -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build/hush-processor-bridge --parallel 2
+      - name: Test
+        run: ctest --test-dir build/hush-processor-bridge --output-on-failure

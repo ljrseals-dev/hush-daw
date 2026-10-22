@@ -1,0 +1,25 @@
+name: HUSH No-Frills GUI
+
+on:
+  push:
+    branches: [main, "codex/**"]
+    paths:
+      - "integration/no-frills-gui/**"
+      - ".github/workflows/hush-no-frills-gui.yml"
+  pull_request:
+    paths:
+      - "integration/no-frills-gui/**"
+      - ".github/workflows/hush-no-frills-gui.yml"
+  workflow_dispatch:
+
+jobs:
+  build-linux-x11:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install X11 development package
+        run: sudo apt-get update && sudo apt-get install -y libx11-dev cmake g++
+      - name: Configure
+        run: cmake -S integration/no-frills-gui -B build/hush-no-frills-gui -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build/hush-no-frills-gui --parallel 2
