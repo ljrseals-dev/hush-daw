@@ -1,0 +1,25 @@
+name: Cosmic Studio bridge contract
+
+on:
+  pull_request:
+    paths:
+      - "cosmic-studio/**"
+      - ".github/workflows/cosmic-studio-bridge.yml"
+  push:
+    branches: [main]
+    paths:
+      - "cosmic-studio/**"
+      - ".github/workflows/cosmic-studio-bridge.yml"
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S cosmic-studio -B build-cosmic -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build-cosmic --parallel 2
+      - name: Test
+        run: ctest --test-dir build-cosmic --output-on-failure
