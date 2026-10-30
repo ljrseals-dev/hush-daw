@@ -45,6 +45,24 @@ if(HUSH_BUILD_COMPOSER)
   add_subdirectory(engines/composer)
 endif()
 
+option(HUSH_BUILD_IMMERSIVE "Build real immersive engine (no stubs)" ON)
+option(HUSH_BUILD_FORENSIC "Build forensic rack" ON)
+option(HUSH_BUILD_DAWCHECKER "Build DawChecker security console backend" ON)
+option(HUSH_BUILD_DAWCHECKER_HARDENED "Build vendored dawchecker_hardened detectors" OFF)
+
+if(HUSH_BUILD_IMMERSIVE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/engines/immersive/CMakeLists.txt")
+  add_subdirectory(engines/immersive)
+  set(HUSH_USE_STUBS OFF CACHE BOOL "Real immersive present" FORCE)
+  message(STATUS "hush: real immersive engine enabled (stubs off)")
+endif()
+if(HUSH_BUILD_FORENSIC)
+  add_subdirectory(engines/forensic)
+endif()
+if(HUSH_BUILD_DAWCHECKER)
+  add_subdirectory(security)
+endif()
+
+
 if(HUSH_BUILD_TESTS)
   enable_testing()
   # Privacy denylist audit (Cosmic Studio parity) — not a DAW checker

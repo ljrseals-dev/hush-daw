@@ -1,0 +1,20 @@
+{
+  "id": "hush-midnight",
+  "name": "HUSH Midnight Immersive",
+  "background": "#050510",
+  "surface": "#0c0c1a",
+  "panel": "#141428",
+  "accent": "#7b6cff",
+  "accent_dim": "#4a3fbf",
+  "text": "#f2f0ff",
+  "text_muted": "#9a94c0",
+  "danger": "#ff6b9d",
+  "success": "#5ef0c8",
+  "fader_track": "#1e1e38",
+  "fader_fill": "#7b6cff",
+  "meter_ok": "#5ef0c8",
+  "meter_warn": "#ffc857",
+  "meter_clip": "#ff6b9d",
+  "font_ui": "Space Grotesk, sans-serif",
+  "radius_px": 10
+}

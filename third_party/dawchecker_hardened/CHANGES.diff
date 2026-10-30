@@ -1,0 +1,1209 @@
+diff -ruN third_party/dawchecker/src/core/DetectorTypes.cpp third_party/dawchecker_hardened/src/core/DetectorTypes.cpp
+--- third_party/dawchecker/src/core/DetectorTypes.cpp	1970-01-01 00:00:00.000000000 +0000
++++ third_party/dawchecker_hardened/src/core/DetectorTypes.cpp	2026-10-11 22:55:34.270543846 +0000
+@@ -0,0 +1,12 @@
++#include "DetectorTypes.h"
++#if defined(__SSE__) || defined(__x86_64__) || defined(_M_X64)
++#include <xmmintrin.h>
++#endif
++namespace dawchecker::dsp {
++void enableFlushDenormalsForThisThread() noexcept
++{
++#if defined(__SSE__) || defined(__x86_64__) || defined(_M_X64)
++    _mm_setcsr(_mm_getcsr() | 0x8040u);   // FTZ (bit 15) | DAZ (bit 6); affects the calling thread only
++#endif
++}
++} // namespace dawchecker::dsp
+diff -ruN third_party/dawchecker/src/core/DetectorTypes.h third_party/dawchecker_hardened/src/core/DetectorTypes.h
+--- third_party/dawchecker/src/core/DetectorTypes.h	2026-09-09 19:08:32.000000000 +0000
++++ third_party/dawchecker_hardened/src/core/DetectorTypes.h	2026-10-11 22:55:34.263382299 +0000
+@@ -1,6 +1,8 @@
+ #pragma once
++// HARDENED FORK (Hushroom 1.1.1). Changes vs. upstream: DetectorResult::label is a pointer to a static string
++// (no std::string, so no allocation on the audio thread). See ../../PROVENANCE.md.
++#include <cmath>
+ #include <cstdint>
+-#include <string>
+ 
+ namespace dawchecker::dsp {
+ 
+@@ -8,13 +10,12 @@
+ 
+ struct DetectorResult
+ {
+-    DetectorStatus status   = DetectorStatus::Idle;
+-    double         confidence = 0.0; // 0..100
+-    double         locationHz = 0.0; // dominant frequency/region of the finding, if applicable
+-    std::string    label;            // human-readable summary for the GUI panel
++    DetectorStatus status     = DetectorStatus::Idle;
++    double         confidence = 0.0;      // 0..100 indicator, NOT a probability
++    double         locationHz = 0.0;      // dominant frequency of the finding, if applicable
++    const char*    label      = "";       // static string, never owned/freed
+ };
+ 
+-// A single biquad notch/lowpass section, used by all neutralizers.
+ struct BiquadState
+ {
+     double b0 = 1.0, b1 = 0.0, b2 = 0.0, a1 = 0.0, a2 = 0.0;
+@@ -32,4 +33,18 @@
+ BiquadState makeNotch(double sampleRate, double freqHz, double q);
+ BiquadState makeOnePoleLowpass(double sampleRate, double cutoffHz);
+ 
++inline constexpr double kPi = 3.14159265358979323846;
++
++// Flush values that would become denormal to exact zero (denormals cause large CPU spikes).
++inline double flushDenormal(double x) noexcept { return (x < 1e-30 && x > -1e-30) ? 0.0 : x; }
++
++// Sanitise a sample rate coming from outside: finite and within a sane range, else 48 kHz.
++inline double sanitizeSampleRate(double sr) noexcept
++{
++    return (std::isfinite(sr) && sr >= 8000.0 && sr <= 768000.0) ? sr : 48000.0;
++}
++
++// Enable flush-to-zero / denormals-are-zero for the CALLING thread (x86 SSE). No-op elsewhere.
++void enableFlushDenormalsForThisThread() noexcept;
++
+ } // namespace dawchecker::dsp
+diff -ruN third_party/dawchecker/src/core/ENFAnalyzer.cpp third_party/dawchecker_hardened/src/core/ENFAnalyzer.cpp
+--- third_party/dawchecker/src/core/ENFAnalyzer.cpp	2026-09-09 19:08:33.000000000 +0000
++++ third_party/dawchecker_hardened/src/core/ENFAnalyzer.cpp	2026-10-11 22:55:34.270942618 +0000
+@@ -1,92 +1,75 @@
+ #include "ENFAnalyzer.h"
+-#include <cmath>
+ #include <algorithm>
++#include <cmath>
+ 
+ namespace dawchecker::dsp {
+ 
+ namespace {
+-constexpr std::array<double, 6> kTrackedFrequencies = {
+-    50.0, 60.0,     // fundamental mains frequencies (EU/US)
+-    100.0, 120.0,   // 2nd harmonics
+-    150.0, 180.0    // 3rd harmonics
+-};
++constexpr double kFloorDbfs = -90.0;
++constexpr double kWindowSec = 2.0;
++constexpr double kTauSec    = 2.0;
++constexpr const char* kIdle   = "no narrowband component near 50 or 60 Hz";
++constexpr const char* kActive = "narrowband component near 50/60 Hz present (mains hum is common; indicator only)";
++constexpr const char* kNA     = "not applicable: sample rate too low";
+ }
+ 
+-ENFAnalyzer::ENFAnalyzer(double sampleRate)
+-{
+-    prepare(sampleRate);
+-}
++ENFAnalyzer::ENFAnalyzer(double sampleRate, double sensitivity) { prepare(sampleRate, sensitivity); }
+ 
+-void ENFAnalyzer::prepare(double sampleRate)
++void ENFAnalyzer::prepare(double sampleRate, double sensitivity)
+ {
+-    sampleRate_ = sampleRate > 0.0 ? sampleRate : 48000.0;
+-    for (std::size_t i = 0; i < bins_.size(); ++i)
++    const double sr = sanitizeSampleRate(sampleRate);
++    const double sens = std::clamp(std::isfinite(sensitivity) ? sensitivity : 5.0, 1.0, 100.0);
++    marginDb_ = std::clamp(15.0 - 1.5 * (sens - 5.0), 8.0, 25.0);
++    baseHz_ = {50.0, 60.0};
++    for (std::size_t b = 0; b < kBases; ++b)
+     {
+-        auto& bin = bins_[i];
+-        bin.freqHz = kTrackedFrequencies[i];
+-        bin.coeff  = 2.0 * std::cos(2.0 * M_PI * bin.freqHz / sampleRate_);
+-        bin.s1 = bin.s2 = 0.0;
++        for (std::size_t i = 0; i < kScan; ++i) freqs_[b * kPerBase + i] = baseHz_[b] - 1.0 + 0.05 * static_cast<double>(i);
++        const double off[kRef] = {-5.0, -4.0, 4.0, 5.0};
++        for (std::size_t j = 0; j < kRef; ++j) freqs_[b * kPerBase + kScan + j] = baseHz_[b] + off[j];
+     }
+-    smoothedPower_ = 0.0;
+-    baselinePower_ = 0.0;
++    valid_ = sr >= 1000.0;
++    const std::size_t block = static_cast<std::size_t>(std::llround(kWindowSec * sr));
++    alpha_ = 1.0 - std::exp(-kWindowSec / kTauSec);
++    bank_.configure(freqs_, sr, block);
++    hits_ = misses_ = 0;
++    result_ = DetectorResult{};
++    result_.label = valid_ ? kIdle : kNA;
+ }
+ 
+-DetectorResult ENFAnalyzer::process(double liveSample, double referenceSample) noexcept
++DetectorResult ENFAnalyzer::process(double x) noexcept
+ {
+-    double fundamentalPower = 0.0;
+-    double harmonicPower = 0.0;
+-    double dominant = 0.0;
+-    double dominantPower = -1.0;
++    if (!valid_) return result_;
++    if (bank_.push(flushDenormal(x))) { evaluateBlock(); bank_.reset(); }
++    return result_;
++}
+ 
+-    for (std::size_t i = 0; i < bins_.size(); ++i)
++void ENFAnalyzer::evaluateBlock() noexcept
++{
++    bool hit = false; double bestPeak = -240.0, bestHz = 0.0;
++    for (std::size_t b = 0; b < kBases; ++b)
+     {
+-        auto& bin = bins_[i];
+-        const double s = liveSample + bin.coeff * bin.s1 - bin.s2;
+-        bin.s2 = bin.s1;
+-        bin.s1 = s;
+-        const double power = bin.s1 * bin.s1 + bin.s2 * bin.s2 - bin.coeff * bin.s1 * bin.s2;
+-
+-        if (i < 2) fundamentalPower += power;
+-        else       harmonicPower += power;
+-
+-        if (power > dominantPower)
++        double peak = -240.0, peakHz = baseHz_[b];
++        for (std::size_t i = 0; i < kScan; ++i)
+         {
+-            dominantPower = power;
+-            dominant = bin.freqHz;
++            const double a = bank_.dbfs(b * kPerBase + i);
++            if (a > peak) { peak = a; peakHz = freqs_[b * kPerBase + i]; }
+         }
++        double lin = 0.0;
++        for (std::size_t j = 0; j < kRef; ++j) lin += std::pow(10.0, bank_.dbfs(b * kPerBase + kScan + j) / 20.0);
++        const double refDb = 20.0 * std::log10(std::max(lin / static_cast<double>(kRef), 1e-12));
++        if (peak > kFloorDbfs && (peak - refDb) >= marginDb_ && peak > bestPeak) { hit = true; bestPeak = peak; bestHz = peakHz; }
+     }
+-
+-    // A reference-free single-ended check: an *asymmetric* fundamental (only
+-    // 50 or only 60, not both, with disproportionate harmonic energy) is more
+-    // consistent with an injected/embedded ENF signature than a genuine
+-    // ambient mains hum picked up acoustically or electrically.
+-    const double asymmetry = std::abs(bins_[0].s1 * bins_[0].s1 - bins_[1].s1 * bins_[1].s1);
+-    const double raw = harmonicPower * 12.0 + asymmetry * 150.0;
+-
+-    smoothedPower_ += (raw - smoothedPower_) * 0.002;
+-    baselinePower_ += (std::abs(referenceSample) - baselinePower_) * 0.001;
+-
+-    const double threshold = 0.0006 + baselinePower_ * 0.02;
+-
+-    DetectorResult result;
+-    result.confidence = std::clamp(smoothedPower_ * 4000.0, 0.0, 100.0);
+-    result.locationHz = dominant;
+-    if (smoothedPower_ > threshold * 2.0)
+-    {
+-        result.status = DetectorStatus::Alert;
+-        result.label  = "ENF signature locked near " + std::to_string(static_cast<int>(dominant)) + " Hz";
+-    }
+-    else if (smoothedPower_ > threshold)
+-    {
+-        result.status = DetectorStatus::Active;
+-        result.label  = "Weak mains-frequency artifact present";
+-    }
++    if (hit) { ++hits_; misses_ = 0; result_.locationHz = bestHz; }
+     else
+     {
+-        result.status = DetectorStatus::Idle;
+-        result.label  = "No ENF artifacts detected";
++        hits_ = 0;
++        if (++misses_ >= 2) { misses_ = 0; result_.status = DetectorStatus::Idle; }
+     }
+-    return result;
++    if (hits_ >= 2) result_.status = DetectorStatus::Active;   // two consecutive windows (4 s); capped at Active
++    result_.confidence += ((hit ? 100.0 : 0.0) - result_.confidence) * alpha_;
++    result_.confidence = flushDenormal(result_.confidence);
++    if (result_.status == DetectorStatus::Idle) { result_.locationHz = 0.0; result_.label = kIdle; }
++    else result_.label = kActive;
+ }
+ 
+ } // namespace dawchecker::dsp
+diff -ruN third_party/dawchecker/src/core/ENFAnalyzer.h third_party/dawchecker_hardened/src/core/ENFAnalyzer.h
+--- third_party/dawchecker/src/core/ENFAnalyzer.h	2026-09-09 19:08:33.000000000 +0000
++++ third_party/dawchecker_hardened/src/core/ENFAnalyzer.h	2026-10-11 22:55:34.263752963 +0000
+@@ -1,37 +1,30 @@
+ #pragma once
++// HARDENED FORK. Looks for a narrowband component near 50 Hz or 60 Hz (fundamental only) using 2-second Hann
++// windows. Mains hum is common in ordinary recordings, so this detector never goes above Active.
+ #include <array>
+ #include "DetectorTypes.h"
++#include "HannGoertzelBank.h"
+ 
+ namespace dawchecker::dsp {
+ 
+-// Detects Electric Network Frequency (mains hum, 50/60 Hz + harmonics)
+-// signatures that are anomalously strong, phase-locked, or time-inconsistent
+-// relative to a reference signal — a common forensic timestamp artifact.
+ class ENFAnalyzer
+ {
+ public:
+-    explicit ENFAnalyzer(double sampleRate = 48000.0);
+-
+-    void prepare(double sampleRate);
+-
+-    // Feed one sample of "live" (post-chain) and "reference" (pre-chain /
+-    // sidechain) audio. Returns the current detector result.
+-    DetectorResult process(double liveSample, double referenceSample) noexcept;
+-
+-    double lastTamperContribution() const noexcept { return smoothedPower_; }
++    explicit ENFAnalyzer(double sampleRate = 48000.0, double sensitivity = 5.0);
++    void prepare(double sampleRate, double sensitivity = 5.0);
++    DetectorResult process(double liveSample) noexcept;   // real-time safe
+ 
+ private:
+-    struct GoertzelBin
+-    {
+-        double coeff = 0.0;
+-        double s1 = 0.0, s2 = 0.0;
+-        double freqHz = 0.0;
+-    };
++    static constexpr std::size_t kScan = 41, kRef = 4, kPerBase = kScan + kRef, kBases = 2;
++    void evaluateBlock() noexcept;
+ 
+-    double sampleRate_ = 48000.0;
+-    std::array<GoertzelBin, 6> bins_{}; // 50, 60, and two harmonics of each
+-    double smoothedPower_ = 0.0;
+-    double baselinePower_ = 0.0;
++    HannGoertzelBank<kBases * kPerBase> bank_;
++    std::array<double, kBases> baseHz_{};
++    std::array<double, kBases * kPerBase> freqs_{};
++    bool valid_ = false;
++    double marginDb_ = 15.0, alpha_ = 0.6;
++    int hits_ = 0, misses_ = 0;
++    DetectorResult result_{};
+ };
+ 
+ } // namespace dawchecker::dsp
+diff -ruN third_party/dawchecker/src/core/HannGoertzelBank.h third_party/dawchecker_hardened/src/core/HannGoertzelBank.h
+--- third_party/dawchecker/src/core/HannGoertzelBank.h	1970-01-01 00:00:00.000000000 +0000
++++ third_party/dawchecker_hardened/src/core/HannGoertzelBank.h	2026-10-11 22:55:34.264166176 +0000
+@@ -0,0 +1,68 @@
++#pragma once
++// Hann-windowed Goertzel bank over fixed-length blocks. Fixed storage, no allocation, amplitude-calibrated:
++// dbfs(k) returns the amplitude of a sinusoid at frequency k in dBFS (a full-scale sine reads about 0 dBFS).
++#include <array>
++#include <cmath>
++#include <cstddef>
++#include "DetectorTypes.h"
++
++namespace dawchecker::dsp {
++
++template <std::size_t K>
++class HannGoertzelBank
++{
++public:
++    void configure(const std::array<double, K>& freqsHz, double sampleRate, std::size_t blockLen) noexcept
++    {
++        n_ = blockLen >= 16 ? blockLen : 16;
++        for (std::size_t k = 0; k < K; ++k)
++        {
++            const double w = 2.0 * kPi * freqsHz[k] / sampleRate;
++            coeff_[k] = 2.0 * std::cos(w); cosw_[k] = std::cos(w); sinw_[k] = std::sin(w);
++        }
++        const double d = 2.0 * kPi / static_cast<double>(n_ - 1);
++        dc_ = std::cos(d); ds_ = std::sin(d);
++        reset();
++    }
++
++    void reset() noexcept
++    {
++        s1_.fill(0.0); s2_.fill(0.0);
++        idx_ = 0; wc_ = 1.0; ws_ = 0.0; wsum_ = 0.0;
++    }
++
++    std::size_t blockLength() const noexcept { return n_; }
++
++    // Returns true when a block is complete (call dbfs(), then reset()).
++    bool push(double x) noexcept
++    {
++        const double w  = 0.5 - 0.5 * wc_;          // Hann: 0.5 - 0.5 cos(2 pi n/(N-1))
++        wsum_ += w;
++        const double xw = x * w;
++        for (std::size_t k = 0; k < K; ++k)
++        {
++            const double s0 = xw + coeff_[k] * s1_[k] - s2_[k];
++            s2_[k] = s1_[k];
++            s1_[k] = s0;
++        }
++        const double c = wc_ * dc_ - ws_ * ds_;      // rotate the phasor: no cos() per sample
++        ws_ = ws_ * dc_ + wc_ * ds_;
++        wc_ = c;
++        return ++idx_ >= n_;
++    }
++
++    double dbfs(std::size_t k) const noexcept
++    {
++        const double re = s1_[k] - s2_[k] * cosw_[k];
++        const double im = s2_[k] * sinw_[k];
++        const double amp = wsum_ > 0.0 ? 2.0 * std::sqrt(re * re + im * im) / wsum_ : 0.0;
++        return amp > 1e-12 ? 20.0 * std::log10(amp) : -240.0;
++    }
++
++private:
++    std::array<double, K> coeff_{}, cosw_{}, sinw_{}, s1_{}, s2_{};
++    std::size_t n_ = 16, idx_ = 0;
++    double dc_ = 1.0, ds_ = 0.0, wc_ = 1.0, ws_ = 0.0, wsum_ = 0.0;
++};
++
++} // namespace dawchecker::dsp
+diff -ruN third_party/dawchecker/src/core/MSV_Engine.cpp third_party/dawchecker_hardened/src/core/MSV_Engine.cpp
+--- third_party/dawchecker/src/core/MSV_Engine.cpp	2026-09-09 19:08:33.000000000 +0000
++++ third_party/dawchecker_hardened/src/core/MSV_Engine.cpp	2026-10-11 22:55:34.271312394 +0000
+@@ -1,94 +1,84 @@
+ #include "MSV_Engine.h"
+ #include <algorithm>
++#include <cstring>
+ 
+ namespace dawchecker::dsp {
+ 
+-MSV_Engine::MSV_Engine(double sampleRate, double sensitivity)
+-{
+-    prepare(sampleRate, sensitivity);
++namespace {
++inline std::uint64_t d2u(double d) noexcept { std::uint64_t u; std::memcpy(&u, &d, sizeof u); return u; }
++inline double u2d(std::uint64_t u) noexcept { double d; std::memcpy(&d, &u, sizeof d); return d; }
++inline std::uint64_t p2u(const char* p) noexcept { return static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(p)); }
++inline const char* u2p(std::uint64_t u) noexcept { return reinterpret_cast<const char*>(static_cast<std::uintptr_t>(u)); }
+ }
+ 
++MSV_Engine::MSV_Engine(double sampleRate, double sensitivity) { prepare(sampleRate, sensitivity); }
++
+ void MSV_Engine::prepare(double sampleRate, double sensitivity)
+ {
+-    sampleRate_  = sampleRate > 0.0 ? sampleRate : 48000.0;
+-    sensitivity_ = std::clamp(sensitivity, 1.0, 100.0);
+-
++    enableFlushDenormalsForThisThread();   // affects the calling thread; call prepare() or this on the audio thread too
++    sampleRate_  = sanitizeSampleRate(sampleRate);
++    sensitivity_ = std::clamp(std::isfinite(sensitivity) ? sensitivity : 5.0, 1.0, 100.0);
+     watermarkDetector_.prepare(sampleRate_, sensitivity_);
+-    enfAnalyzer_.prepare(sampleRate_);
+-    ultrasonicScanner_.prepare(sampleRate_);
+-
+-    enfNotch_.prepare(sampleRate_);
+-    ultrasonicRolloff_.prepare(sampleRate_, 17000.0);
++    enfAnalyzer_.prepare(sampleRate_, sensitivity_);
++    ultrasonicScanner_.prepare(sampleRate_, sensitivity_);
++    EngineSnapshot s;
++    s.watermark = DetectorResult{}; s.enf = DetectorResult{}; s.ultrasonic = DetectorResult{};
++    s.watermark.label = s.enf.label = s.ultrasonic.label = "";
++    publish(s);
+ }
+ 
+-void MSV_Engine::process(double referenceSample, double liveSample, double& out) noexcept
++double MSV_Engine::aggregate(const DetectorResult& wm, const DetectorResult& enf, const DetectorResult& us) noexcept
+ {
+-    if (bypassAll.load(std::memory_order_relaxed))
+-    {
+-        out = liveSample;
+-        return;
+-    }
+-
+-    const auto wmResult  = watermarkDetector_.process(liveSample, referenceSample);
+-    const auto enfResult = enfAnalyzer_.process(liveSample, referenceSample);
+-    const auto usResult  = ultrasonicScanner_.process(liveSample);
+-
+-    double cleaned = liveSample;
+-
+-    if (watermarkScrubEnabled.load(std::memory_order_relaxed))
+-        cleaned = watermarkScrubber_.process(cleaned, referenceSample, wmResult.confidence);
+-
+-    if (enfNotchEnabled.load(std::memory_order_relaxed) && enfResult.status != DetectorStatus::Idle)
+-        cleaned = enfNotch_.process(cleaned);
+-
+-    if (ultrasonicRolloffEnabled.load(std::memory_order_relaxed) && usResult.status != DetectorStatus::Idle)
+-        cleaned = ultrasonicRolloff_.process(cleaned);
+-
+-    out = cleaned;
+-
+-    // Aggregate tamper score: weighted max-plus-average blend so a single
+-    // strong alert dominates but multiple weak findings still add up.
+-    const double maxConf = std::max({wmResult.confidence, enfResult.confidence, usResult.confidence});
+-    const double avgConf = (wmResult.confidence + enfResult.confidence + usResult.confidence) / 3.0;
+-    const double aggregate = std::clamp(maxConf * 0.7 + avgConf * 0.3, 0.0, 100.0);
+-
+-    const bool compromised = wmResult.status == DetectorStatus::Alert ||
+-                              enfResult.status == DetectorStatus::Alert ||
+-                              usResult.status == DetectorStatus::Alert;
+-
+-    tamperScore_.store(aggregate, std::memory_order_relaxed);
+-    isCompromised_.store(compromised, std::memory_order_relaxed);
+-
+-    watermarkConfidence_.store(wmResult.confidence, std::memory_order_relaxed);
+-    watermarkStatus_.store(static_cast<std::uint8_t>(wmResult.status), std::memory_order_relaxed);
++    const double maxConf = std::max({wm.confidence, enf.confidence, us.confidence});
++    const double avgConf = (wm.confidence + enf.confidence + us.confidence) / 3.0;
++    return std::clamp(maxConf * 0.7 + avgConf * 0.3, 0.0, 100.0);
++}
+ 
+-    enfConfidence_.store(enfResult.confidence, std::memory_order_relaxed);
+-    enfStatus_.store(static_cast<std::uint8_t>(enfResult.status), std::memory_order_relaxed);
+-    enfLocationHz_.store(enfResult.locationHz, std::memory_order_relaxed);
++void MSV_Engine::process(double liveSample, double referenceSample, double& out) noexcept
++{
++    out = liveSample;   // detection only: audio is never modified here
++    EngineSnapshot s;
++    s.watermark  = watermarkDetector_.process(liveSample, referenceSample);
++    s.enf        = enfAnalyzer_.process(liveSample);
++    s.ultrasonic = ultrasonicScanner_.process(liveSample);
++    s.tamperScore = aggregate(s.watermark, s.enf, s.ultrasonic);
++    s.isCompromised = s.watermark.status == DetectorStatus::Alert || s.enf.status == DetectorStatus::Alert ||
++                      s.ultrasonic.status == DetectorStatus::Alert;
++    publish(s);
++}
+ 
+-    ultrasonicConfidence_.store(usResult.confidence, std::memory_order_relaxed);
+-    ultrasonicStatus_.store(static_cast<std::uint8_t>(usResult.status), std::memory_order_relaxed);
+-    ultrasonicLocationHz_.store(usResult.locationHz, std::memory_order_relaxed);
++// Single-writer seqlock. Every payload word is an atomic, so there is no data race (TSan-clean).
++void MSV_Engine::publish(const EngineSnapshot& s) noexcept
++{
++    const std::uint64_t w[kWords] = {
++        d2u(s.tamperScore), s.isCompromised ? 1u : 0u,
++        static_cast<std::uint64_t>(s.watermark.status),  d2u(s.watermark.confidence),  d2u(s.watermark.locationHz),  p2u(s.watermark.label),
++        static_cast<std::uint64_t>(s.enf.status),        d2u(s.enf.confidence),        d2u(s.enf.locationHz),        p2u(s.enf.label),
++        static_cast<std::uint64_t>(s.ultrasonic.status), d2u(s.ultrasonic.confidence), d2u(s.ultrasonic.locationHz), p2u(s.ultrasonic.label)};
++    const std::uint32_t q = seq_.load(std::memory_order_relaxed);
++    seq_.store(q + 1, std::memory_order_relaxed);          // odd: write in progress
++    std::atomic_thread_fence(std::memory_order_release);
++    for (std::size_t i = 0; i < kWords; ++i) words_[i].store(w[i], std::memory_order_relaxed);
++    seq_.store(q + 2, std::memory_order_release);          // even: stable
+ }
+ 
+ EngineSnapshot MSV_Engine::snapshot() const noexcept
+ {
+-    EngineSnapshot snap;
+-    snap.tamperScore   = tamperScore_.load(std::memory_order_relaxed);
+-    snap.isCompromised = isCompromised_.load(std::memory_order_relaxed);
+-
+-    snap.watermark.confidence = watermarkConfidence_.load(std::memory_order_relaxed);
+-    snap.watermark.status     = static_cast<DetectorStatus>(watermarkStatus_.load(std::memory_order_relaxed));
+-
+-    snap.enf.confidence = enfConfidence_.load(std::memory_order_relaxed);
+-    snap.enf.status     = static_cast<DetectorStatus>(enfStatus_.load(std::memory_order_relaxed));
+-    snap.enf.locationHz = enfLocationHz_.load(std::memory_order_relaxed);
+-
+-    snap.ultrasonic.confidence = ultrasonicConfidence_.load(std::memory_order_relaxed);
+-    snap.ultrasonic.status     = static_cast<DetectorStatus>(ultrasonicStatus_.load(std::memory_order_relaxed));
+-    snap.ultrasonic.locationHz = ultrasonicLocationHz_.load(std::memory_order_relaxed);
+-
+-    return snap;
++    std::uint64_t w[kWords];
++    std::uint32_t a, b;
++    do
++    {
++        a = seq_.load(std::memory_order_acquire);
++        for (std::size_t i = 0; i < kWords; ++i) w[i] = words_[i].load(std::memory_order_relaxed);
++        std::atomic_thread_fence(std::memory_order_acquire);
++        b = seq_.load(std::memory_order_relaxed);
++    } while ((a & 1u) != 0u || a != b);
++    EngineSnapshot s;
++    s.tamperScore = u2d(w[0]);  s.isCompromised = w[1] != 0;
++    s.watermark  = {static_cast<DetectorStatus>(w[2]),  u2d(w[3]),  u2d(w[4]),  u2p(w[5])};
++    s.enf        = {static_cast<DetectorStatus>(w[6]),  u2d(w[7]),  u2d(w[8]),  u2p(w[9])};
++    s.ultrasonic = {static_cast<DetectorStatus>(w[10]), u2d(w[11]), u2d(w[12]), u2p(w[13])};
++    return s;
+ }
+ 
+ } // namespace dawchecker::dsp
+diff -ruN third_party/dawchecker/src/core/MSV_Engine.h third_party/dawchecker_hardened/src/core/MSV_Engine.h
+--- third_party/dawchecker/src/core/MSV_Engine.h	2026-09-09 19:08:34.000000000 +0000
++++ third_party/dawchecker_hardened/src/core/MSV_Engine.h	2026-10-11 22:55:34.264521652 +0000
+@@ -1,15 +1,12 @@
+ #pragma once
+-//==============================================================================
+-// MSV_Engine.h — DawChecker Secure forensic/DSP core
+-//
+-// Upgrade of the original single-file Goertzel prototype into a modular
+-// engine: each forensic technique lives in its own detector/neutralizer
+-// class (see ENFAnalyzer, UltrasonicScanner, WatermarkDetector,
+-// Neutralizers.h), and this class aggregates their results into the overall
+-// Tamper Score plus produces the cleaned output sample.
+-//==============================================================================
+-#include <atomic>
++// HARDENED FORK. Runs the three detectors and publishes ONE coherent snapshot through a seqlock.
++//  * process() never alters audio: `out` is always exactly `live`.  Neutralization lives in render_neutralized().
++//  * process() performs no allocation, locking, I/O or exceptions.
++//  * Argument order is (live, reference, out), matching the detectors.
++//  * One writer thread calls process()/prepare(); any number of threads may call snapshot().
+ #include <array>
++#include <atomic>
++#include <cstdint>
+ #include "DetectorTypes.h"
+ #include "ENFAnalyzer.h"
+ #include "UltrasonicScanner.h"
+@@ -20,61 +17,34 @@
+ 
+ struct EngineSnapshot
+ {
+-    double tamperScore = 0.0; // 0..100 aggregate
++    double tamperScore = 0.0;   // 0..100 aggregate, uncalibrated indicator; not exposed by the Hushroom CLI
+     bool   isCompromised = false;
+     DetectorResult watermark;
+     DetectorResult enf;
+     DetectorResult ultrasonic;
+ };
+ 
+-// Thread-safety note: `process()` runs on the real-time audio thread.
+-// `snapshot()` is safe to call from the GUI thread — all cross-thread state
+-// is exposed only through std::atomic<double>/enum stores below, so the GUI
+-// never blocks the audio callback and the audio callback never blocks on the
+-// GUI.
+ class MSV_Engine
+ {
+ public:
+     explicit MSV_Engine(double sampleRate = 48000.0, double sensitivity = 5.0);
+-
+     void prepare(double sampleRate, double sensitivity);
+-
+-    // Runs one sample through all detectors + (optionally enabled)
+-    // neutralizers. `out` receives the cleaned sample.
+-    void process(double referenceSample, double liveSample, double& out) noexcept;
+-
+-    EngineSnapshot snapshot() const noexcept;
+-
+-    // Per-module neutralization toggles (GUI-driven, audio-thread read).
+-    std::atomic<bool> watermarkScrubEnabled{true};
+-    std::atomic<bool> enfNotchEnabled{true};
+-    std::atomic<bool> ultrasonicRolloffEnabled{true};
+-    std::atomic<bool> bypassAll{false};
++    void process(double liveSample, double referenceSample, double& out) noexcept;
++    EngineSnapshot snapshot() const noexcept;      // never returns a torn mix of fields from different samples
++    // The aggregate used for tamperScore, exposed so tests can check snapshot coherence.
++    static double aggregate(const DetectorResult& wm, const DetectorResult& enf, const DetectorResult& us) noexcept;
+ 
+ private:
+-    double sampleRate_ = 48000.0;
+-    double sensitivity_ = 5.0;
+-
+-    WatermarkDetector  watermarkDetector_;
+-    ENFAnalyzer        enfAnalyzer_;
+-    UltrasonicScanner  ultrasonicScanner_;
+-
+-    WatermarkScrubber  watermarkScrubber_;
+-    ENFNotchFilter     enfNotch_;
+-    UltrasonicRolloff  ultrasonicRolloff_;
+-
+-    // Cross-thread published state (audio thread writes, GUI thread reads).
+-    std::atomic<double> tamperScore_{0.0};
+-    std::atomic<bool>   isCompromised_{false};
+-
+-    std::atomic<double> watermarkConfidence_{0.0};
+-    std::atomic<std::uint8_t> watermarkStatus_{0};
+-    std::atomic<double> enfConfidence_{0.0};
+-    std::atomic<std::uint8_t> enfStatus_{0};
+-    std::atomic<double> enfLocationHz_{0.0};
+-    std::atomic<double> ultrasonicConfidence_{0.0};
+-    std::atomic<std::uint8_t> ultrasonicStatus_{0};
+-    std::atomic<double> ultrasonicLocationHz_{0.0};
++    static constexpr std::size_t kWords = 14;
++    static_assert(std::atomic<std::uint64_t>::is_always_lock_free, "seqlock payload words must be lock-free");
++    void publish(const EngineSnapshot& s) noexcept;
++
++    double sampleRate_ = 48000.0, sensitivity_ = 5.0;
++    WatermarkDetector watermarkDetector_;
++    ENFAnalyzer       enfAnalyzer_;
++    UltrasonicScanner ultrasonicScanner_;
++    std::atomic<std::uint32_t> seq_{0};
++    std::array<std::atomic<std::uint64_t>, kWords> words_{};
+ };
+ 
+ } // namespace dawchecker::dsp
+diff -ruN third_party/dawchecker/src/core/Neutralizers.cpp third_party/dawchecker_hardened/src/core/Neutralizers.cpp
+--- third_party/dawchecker/src/core/Neutralizers.cpp	2026-09-09 19:08:34.000000000 +0000
++++ third_party/dawchecker_hardened/src/core/Neutralizers.cpp	2026-10-11 22:55:34.271663222 +0000
+@@ -46,7 +46,7 @@
+ {
+     static constexpr std::array<double, 6> freqs = {50.0, 60.0, 100.0, 120.0, 150.0, 180.0};
+     for (std::size_t i = 0; i < notches_.size(); ++i)
+-        notches_[i] = makeNotch(sampleRate, freqs[i], 12.0);
++        notches_[i] = makeNotch(sanitizeSampleRate(sampleRate), freqs[i], 12.0);
+ }
+ 
+ double ENFNotchFilter::process(double x) noexcept
+@@ -71,17 +71,17 @@
+     return lowpass_.process(x);
+ }
+ 
+-double WatermarkScrubber::process(double liveSample, double referenceSample, double detectorConfidence) noexcept
++std::vector<double> render_neutralized(const std::vector<double>& in, double sampleRate, const NeutralizeParams& p)
+ {
+-    if (!enabled) return liveSample;
+-
+-    const double delta = liveSample - referenceSample;
+-    smoothedDelta_ += (delta - smoothedDelta_) * 0.01;
+-
+-    // Scale correction by confidence so we never touch audio the detector
+-    // isn't actually flagging (0 confidence => no change).
+-    const double strength = std::clamp(detectorConfidence / 100.0, 0.0, 1.0) * 0.85;
+-    return liveSample - smoothedDelta_ * strength;
++    std::vector<double> out = in;                       // copy: the input is never modified
++    if (!p.enfNotch && !p.ultrasonicRolloff) return out; // empty enable set: bit-identical
++    const double sr = sanitizeSampleRate(sampleRate);
++    ENFNotchFilter notch(sr);
++    notch.enabled = p.enfNotch;
++    UltrasonicRolloff roll(sr, p.rolloffCutoffHz);
++    roll.enabled = p.ultrasonicRolloff;
++    for (double& x : out) x = roll.process(notch.process(x));
++    return out;
+ }
+ 
+ } // namespace dawchecker::dsp
+diff -ruN third_party/dawchecker/src/core/Neutralizers.h third_party/dawchecker_hardened/src/core/Neutralizers.h
+--- third_party/dawchecker/src/core/Neutralizers.h	2026-09-09 19:08:34.000000000 +0000
++++ third_party/dawchecker_hardened/src/core/Neutralizers.h	2026-10-11 22:55:34.264872706 +0000
+@@ -1,45 +1,43 @@
+ #pragma once
++// HARDENED FORK. Neutralizers are OFF by default and are never applied by MSV_Engine::process(). They are only
++// reachable through render_neutralized(), an explicit OFFLINE call that returns a NEW buffer. The upstream
++// WatermarkScrubber (watermark removal) has been removed from this fork.
+ #include <array>
++#include <vector>
+ #include "DetectorTypes.h"
+ 
+ namespace dawchecker::dsp {
+ 
+-// Cascaded notch filters at the ENF fundamentals + harmonics.
+ class ENFNotchFilter
+ {
+ public:
+     explicit ENFNotchFilter(double sampleRate = 48000.0);
+     void prepare(double sampleRate);
+     double process(double x) noexcept;
+-    bool enabled = true;
+-
++    bool enabled = false;
+ private:
+     std::array<BiquadState, 6> notches_{};
+ };
+ 
+-// One-pole steep rolloff above the audible/near-ultrasonic boundary.
+ class UltrasonicRolloff
+ {
+ public:
+     explicit UltrasonicRolloff(double sampleRate = 48000.0, double cutoffHz = 17000.0);
+     void prepare(double sampleRate, double cutoffHz = 17000.0);
+     double process(double x) noexcept;
+-    bool enabled = true;
+-
++    bool enabled = false;
+ private:
+     BiquadState lowpass_{};
+ };
+ 
+-// Subtracts the estimated persistent watermark bias from the live signal,
+-// scaled by detection confidence so clean audio is left untouched.
+-class WatermarkScrubber
++struct NeutralizeParams
+ {
+-public:
+-    double process(double liveSample, double referenceSample, double detectorConfidence) noexcept;
+-    bool enabled = true;
+-
+-private:
+-    double smoothedDelta_ = 0.0;
++    bool   enfNotch = false;          // notches at 50/60 Hz and harmonics
++    bool   ultrasonicRolloff = false; // low-pass
++    double rolloffCutoffHz = 17000.0;
+ };
+ 
++// Offline, explicit. Never modifies `in`. With nothing enabled the result is bit-identical to `in`.
++std::vector<double> render_neutralized(const std::vector<double>& in, double sampleRate, const NeutralizeParams& params);
++
+ } // namespace dawchecker::dsp
+diff -ruN third_party/dawchecker/src/core/RunningWindow.h third_party/dawchecker_hardened/src/core/RunningWindow.h
+--- third_party/dawchecker/src/core/RunningWindow.h	1970-01-01 00:00:00.000000000 +0000
++++ third_party/dawchecker_hardened/src/core/RunningWindow.h	2026-10-11 22:55:34.265267835 +0000
+@@ -0,0 +1,48 @@
++#pragma once
++// Fixed-size sliding window with O(1) mean/variance. No allocation. (Replaces upstream's std::deque history.)
++#include <array>
++#include <cstddef>
++
++namespace dawchecker::dsp {
++
++template <std::size_t N>
++class RunningWindow
++{
++    static_assert(N > 0, "window must be non-empty");
++public:
++    void clear() noexcept { buf_.fill(0.0); head_ = count_ = since_ = 0; sum_ = sumsq_ = 0.0; }
++
++    void push(double x) noexcept
++    {
++        if (count_ == N) { const double old = buf_[head_]; sum_ -= old; sumsq_ -= old * old; }
++        else ++count_;
++        buf_[head_] = x;
++        sum_ += x; sumsq_ += x * x;
++        head_ = (head_ + 1) % N;
++        if (++since_ >= N) { recompute(); since_ = 0; }   // bounds floating-point drift
++    }
++
++    std::size_t count() const noexcept { return count_; }
++    bool full() const noexcept { return count_ == N; }
++    double mean() const noexcept { return count_ ? sum_ / static_cast<double>(count_) : 0.0; }
++    double variance() const noexcept
++    {
++        if (!count_) return 0.0;
++        const double m = mean();
++        const double v = sumsq_ / static_cast<double>(count_) - m * m;
++        return v > 0.0 ? v : 0.0;
++    }
++
++private:
++    void recompute() noexcept
++    {
++        sum_ = sumsq_ = 0.0;
++        const std::size_t start = (count_ == N) ? head_ : 0;
++        for (std::size_t i = 0; i < count_; ++i) { const double v = buf_[(start + i) % N]; sum_ += v; sumsq_ += v * v; }
++    }
++    std::array<double, N> buf_{};
++    std::size_t head_ = 0, count_ = 0, since_ = 0;
++    double sum_ = 0.0, sumsq_ = 0.0;
++};
++
++} // namespace dawchecker::dsp
+diff -ruN third_party/dawchecker/src/core/SecurityHardening.cpp third_party/dawchecker_hardened/src/core/SecurityHardening.cpp
+--- third_party/dawchecker/src/core/SecurityHardening.cpp	2026-09-09 19:08:34.000000000 +0000
++++ third_party/dawchecker_hardened/src/core/SecurityHardening.cpp	2026-10-11 22:55:34.272100686 +0000
+@@ -1,3 +1,4 @@
++#include <string>
+ #include "SecurityHardening.h"
+ 
+ #include <cstring>
+@@ -81,6 +82,37 @@
+ #endif
+ }
+ 
++bool detectNonExecutableStack()
++{
++#if defined(__linux__)
++    std::ifstream maps("/proc/self/maps");
++    std::string line;
++    while (std::getline(maps, line))
++    {
++        if (line.find("[stack]") == std::string::npos) continue;
++        const auto sp = line.find(' ');
++        return sp != std::string::npos && line.size() > sp + 3 && line[sp + 3] != 'x';
++    }
++#endif
++    return false;   // unknown or not provable on this platform
++}
++const char* fortifyLevel()
++{
++#if defined(_FORTIFY_SOURCE)
++    return (_FORTIFY_SOURCE == 3) ? "3" : (_FORTIFY_SOURCE == 2) ? "2" : (_FORTIFY_SOURCE == 1) ? "1" : "other";
++#else
++    return "not enabled";
++#endif
++}
++const char* pieState()
++{
++#if defined(__PIE__) || defined(__pie__)
++    return "yes";
++#else
++    return "no";
++#endif
++}
++
+ } // namespace
+ 
+ HardeningReport runStartupSelfCheck()
+@@ -91,16 +123,21 @@
+     report.debuggerDetected = detectDebuggerPresent();
+     report.runningElevated = detectElevatedPrivileges();
+ 
+-    // These two are compiled in via CMakeLists.txt's `hardening_flags`
+-    // target for every build of this project, so we can state them
+-    // truthfully as build-time facts rather than guessing at runtime.
++    // HARDENED FORK: report only facts that are provable here. Compiler-mitigation flags are read from the
++    // compiler's own macros for THIS translation unit (they are false if the build did not enable them).
++#if defined(__SSP__) || defined(__SSP_STRONG__) || defined(__SSP_ALL__) || defined(__SSP_EXPLICIT__)
+     report.stackProtectorPresumed = true;
+-    report.controlFlowGuardOrCET = true;
+-#if defined(DAWCHECKER_PLATFORM_WINDOWS)
+-    report.dataExecutionPreventionActive = true; // /NXCOMPAT
+ #else
+-    report.dataExecutionPreventionActive = true; // -Wl,-z,noexecstack
++    report.stackProtectorPresumed = false;
++#endif
++#if defined(__CET__)
++    report.controlFlowGuardOrCET = true;      // gcc/clang define __CET__ under -fcf-protection=full
++#else
++    report.controlFlowGuardOrCET = false;
+ #endif
++    report.dataExecutionPreventionActive = detectNonExecutableStack();
++    report.notes.emplace_back(std::string("compiled with FORTIFY_SOURCE level: ") + fortifyLevel());
++    report.notes.emplace_back(std::string("position-independent executable (compile-time macro): ") + pieState());
+ 
+     if (report.debuggerDetected)
+         report.notes.emplace_back(
+diff -ruN third_party/dawchecker/src/core/SecurityHardening.h third_party/dawchecker_hardened/src/core/SecurityHardening.h
+--- third_party/dawchecker/src/core/SecurityHardening.h	2026-09-09 19:08:35.000000000 +0000
++++ third_party/dawchecker_hardened/src/core/SecurityHardening.h	2026-10-11 22:55:34.265677870 +0000
+@@ -30,8 +30,8 @@
+ {
+     bool aslrActive = false;
+     bool dataExecutionPreventionActive = false;
+-    bool stackProtectorPresumed = false;   // inferred from build flags, not runtime-provable
+-    bool controlFlowGuardOrCET = false;
++    bool stackProtectorPresumed = false;   // FORK: from compiler macro (__SSP*__) for this build; false if not compiled in
++    bool controlFlowGuardOrCET = false;    // FORK: from __CET__ (-fcf-protection); false if not compiled in
+     bool debuggerDetected = false;         // informational only — never used to alter behavior
+     bool runningElevated = false;          // informational — flagged, not blocked
+     std::optional<std::string> binarySha256; // self-hash if a companion .sha256 manifest exists
+diff -ruN third_party/dawchecker/src/core/UltrasonicScanner.cpp third_party/dawchecker_hardened/src/core/UltrasonicScanner.cpp
+--- third_party/dawchecker/src/core/UltrasonicScanner.cpp	2026-09-09 19:08:35.000000000 +0000
++++ third_party/dawchecker_hardened/src/core/UltrasonicScanner.cpp	2026-10-11 22:55:34.272545044 +0000
+@@ -1,66 +1,85 @@
+ #include "UltrasonicScanner.h"
+-#include <cmath>
+ #include <algorithm>
++#include <cmath>
+ 
+ namespace dawchecker::dsp {
+ 
+ namespace {
+-constexpr std::array<double, 5> kBands = {17400.0, 18000.0, 18500.0, 19200.0, 20150.0};
++constexpr std::array<double, 5> kBandCentres = {17400.0, 18000.0, 18500.0, 19200.0, 20150.0};
++constexpr double kFloorDbfs  = -90.0;   // ignore anything quieter than this
++constexpr double kBlockSec   = 0.085;
++constexpr double kTauSec     = 0.250;   // confidence smoothing time constant (gate 4)
++constexpr const char* kIdle   = "no sustained narrowband tone in the 17-20 kHz bands";
++constexpr const char* kActive = "sustained narrowband tone in a 17-20 kHz band";
++constexpr const char* kAlert  = "persistent narrowband tone in a 17-20 kHz band (indicator only)";
++constexpr const char* kNA     = "not applicable: sample rate too low for the 17-20 kHz bands";
+ }
+ 
+-UltrasonicScanner::UltrasonicScanner(double sampleRate) { prepare(sampleRate); }
++UltrasonicScanner::UltrasonicScanner(double sampleRate, double sensitivity) { prepare(sampleRate, sensitivity); }
+ 
+-void UltrasonicScanner::prepare(double sampleRate)
++void UltrasonicScanner::prepare(double sampleRate, double sensitivity)
+ {
+-    sampleRate_ = sampleRate > 0.0 ? sampleRate : 48000.0;
+-    const double nyquist = sampleRate_ * 0.5;
+-    for (std::size_t i = 0; i < bins_.size(); ++i)
++    const double sr = sanitizeSampleRate(sampleRate);
++    const double sens = std::clamp(std::isfinite(sensitivity) ? sensitivity : 5.0, 1.0, 100.0);
++    marginDb_ = std::clamp(20.0 - 2.0 * (sens - 5.0), 10.0, 30.0);
++    const std::size_t block = static_cast<std::size_t>(std::llround(kBlockSec * sr));
++    alpha_ = 1.0 - std::exp(-(static_cast<double>(block) / sr) / kTauSec);
++    const double limit = 0.49 * sr;
++    std::array<double, kBands * kPerBand> freqs{};
++    anyValid_ = false;
++    for (std::size_t b = 0; b < kBands; ++b)
+     {
+-        auto& bin = bins_[i];
+-        bin.freqHz = std::min(kBands[i], nyquist * 0.98);
+-        bin.coeff  = 2.0 * std::cos(2.0 * M_PI * bin.freqHz / sampleRate_);
+-        bin.s1 = bin.s2 = 0.0;
++        const double c = kBandCentres[b];
++        valid_[b] = (c + 800.0) < limit;
++        anyValid_ = anyValid_ || valid_[b];
++        bandHz_[b] = c;
++        const double cc = valid_[b] ? c : 1000.0;     // harmless placeholder for disabled bands
++        freqs[b * kPerBand + 0] = cc;
++        freqs[b * kPerBand + 1] = cc - 400.0; freqs[b * kPerBand + 2] = cc + 400.0;
++        freqs[b * kPerBand + 3] = cc - 800.0; freqs[b * kPerBand + 4] = cc + 800.0;
+     }
+-    smoothed_ = 0.0;
++    bank_.configure(freqs, sr, block);
++    hits_ = misses_ = 0;
++    result_ = DetectorResult{};
++    result_.label = anyValid_ ? kIdle : kNA;
+ }
+ 
+-DetectorResult UltrasonicScanner::process(double liveSample) noexcept
++DetectorResult UltrasonicScanner::process(double x) noexcept
+ {
+-    double total = 0.0;
+-    double dominant = 0.0, dominantPower = -1.0;
+-
+-    for (auto& bin : bins_)
+-    {
+-        const double s = liveSample + bin.coeff * bin.s1 - bin.s2;
+-        bin.s2 = bin.s1;
+-        bin.s1 = s;
+-        const double power = bin.s1 * bin.s1 + bin.s2 * bin.s2 - bin.coeff * bin.s1 * bin.s2;
+-        total += power;
+-        if (power > dominantPower) { dominantPower = power; dominant = bin.freqHz; }
+-    }
+-
+-    smoothed_ += (total - smoothed_) * 0.003;
+-
+-    DetectorResult result;
+-    result.confidence = std::clamp(smoothed_ * 6000.0, 0.0, 100.0);
+-    result.locationHz = dominant;
++    if (!anyValid_) return result_;
++    if (bank_.push(flushDenormal(x))) { evaluateBlock(); bank_.reset(); }
++    return result_;
++}
+ 
+-    if (smoothed_ > 0.0009)
+-    {
+-        result.status = DetectorStatus::Alert;
+-        result.label  = "Ultrasonic beacon near " + std::to_string(static_cast<int>(dominant)) + " Hz";
+-    }
+-    else if (smoothed_ > 0.00025)
++void UltrasonicScanner::evaluateBlock() noexcept
++{
++    bool hit = false; double bestAmp = -240.0, bestHz = 0.0;
++    for (std::size_t b = 0; b < kBands; ++b)
+     {
+-        result.status = DetectorStatus::Active;
+-        result.label  = "Low-level inaudible content present";
++        if (!valid_[b]) continue;
++        const double amp = bank_.dbfs(b * kPerBand);
++        double ref = -240.0;
++        for (std::size_t j = 1; j < kPerBand; ++j) ref = std::max(ref, bank_.dbfs(b * kPerBand + j));
++        if (amp > kFloorDbfs && (amp - ref) >= marginDb_ && amp > bestAmp) { hit = true; bestAmp = amp; bestHz = bandHz_[b]; }
+     }
++    if (hit) { ++hits_; misses_ = 0; result_.locationHz = bestHz; }
+     else
+     {
+-        result.status = DetectorStatus::Idle;
+-        result.label  = "No ultrasonic content detected";
++        hits_ = 0;
++        if (++misses_ >= 3)   // hysteresis: three clean blocks step the verdict down one level
++        {
++            misses_ = 0;
++            if (result_.status == DetectorStatus::Alert) result_.status = DetectorStatus::Active;
++            else result_.status = DetectorStatus::Idle;
++        }
+     }
+-    return result;
++    if (hits_ >= alertBlocks_)       result_.status = DetectorStatus::Alert;
++    else if (hits_ >= activeBlocks_ && result_.status == DetectorStatus::Idle) result_.status = DetectorStatus::Active;
++
++    result_.confidence += ((hit ? 100.0 : 0.0) - result_.confidence) * alpha_;
++    result_.confidence = flushDenormal(result_.confidence);
++    if (result_.status == DetectorStatus::Idle) { result_.locationHz = 0.0; result_.label = kIdle; }
++    else result_.label = (result_.status == DetectorStatus::Alert) ? kAlert : kActive;
+ }
+ 
+ } // namespace dawchecker::dsp
+diff -ruN third_party/dawchecker/src/core/UltrasonicScanner.h third_party/dawchecker_hardened/src/core/UltrasonicScanner.h
+--- third_party/dawchecker/src/core/UltrasonicScanner.h	2026-09-09 19:08:35.000000000 +0000
++++ third_party/dawchecker_hardened/src/core/UltrasonicScanner.h	2026-10-11 22:55:34.268375153 +0000
+@@ -1,26 +1,30 @@
+ #pragma once
++// HARDENED FORK. Detects a sustained narrowband tone in the 17-20 kHz region. It cannot tell a "beacon" from any
++// other steady tone (e.g. a test tone or a CRT whine); it is an indicator only.
+ #include <array>
+ #include "DetectorTypes.h"
++#include "HannGoertzelBank.h"
+ 
+ namespace dawchecker::dsp {
+ 
+-// Scans for inaudible high-frequency content (typically >17 kHz) used for
+-// device fingerprinting, cross-device tracking beacons, or steganographic
+-// side channels.
+ class UltrasonicScanner
+ {
+ public:
+-    explicit UltrasonicScanner(double sampleRate = 48000.0);
+-
+-    void prepare(double sampleRate);
+-    DetectorResult process(double liveSample) noexcept;
++    explicit UltrasonicScanner(double sampleRate = 48000.0, double sensitivity = 5.0);
++    void prepare(double sampleRate, double sensitivity = 5.0);
++    DetectorResult process(double liveSample) noexcept;   // real-time safe: no allocation, locks, or I/O
+ 
+ private:
+-    struct GoertzelBin { double coeff = 0.0, s1 = 0.0, s2 = 0.0, freqHz = 0.0; };
++    static constexpr std::size_t kBands = 5, kPerBand = 5;   // centre + 4 reference bins (+/-400 Hz, +/-800 Hz)
++    void evaluateBlock() noexcept;
+ 
+-    double sampleRate_ = 48000.0;
+-    std::array<GoertzelBin, 5> bins_{}; // 17.4k, 18k, 18.5k, 19.2k, 20.15k
+-    double smoothed_ = 0.0;
++    HannGoertzelBank<kBands * kPerBand> bank_;
++    std::array<bool, kBands> valid_{};
++    std::array<double, kBands> bandHz_{};
++    bool anyValid_ = false;
++    double marginDb_ = 20.0, alpha_ = 0.3;
++    int hits_ = 0, misses_ = 0, activeBlocks_ = 3, alertBlocks_ = 12;
++    DetectorResult result_{};
+ };
+ 
+ } // namespace dawchecker::dsp
+diff -ruN third_party/dawchecker/src/core/WatermarkDetector.cpp third_party/dawchecker_hardened/src/core/WatermarkDetector.cpp
+--- third_party/dawchecker/src/core/WatermarkDetector.cpp	2026-09-09 19:08:35.000000000 +0000
++++ third_party/dawchecker_hardened/src/core/WatermarkDetector.cpp	2026-10-11 22:55:34.272940163 +0000
+@@ -1,85 +1,68 @@
+ #include "WatermarkDetector.h"
+-#include <cmath>
+ #include <algorithm>
+-#include <numeric>
++#include <cmath>
+ 
+ namespace dawchecker::dsp {
+ 
+-WatermarkDetector::WatermarkDetector(double sampleRate, double sensitivity)
+-{
+-    prepare(sampleRate, sensitivity);
++namespace {
++constexpr double kBlockSec   = 0.050;
++constexpr double kTauSec     = 0.050;
++constexpr double kCeilingDb  = -20.0;   // louder than this = the signals simply differ
++constexpr double kMaxStdDb   = 6.0;     // residual level must be steady over the last 8 blocks
++constexpr double kMinRefRms  = 1e-6;    // about -120 dBFS: no usable reference energy
++constexpr const char* kIdle   = "live matches reference, or no usable reference";
++constexpr const char* kDiffer = "live and reference differ strongly (not a low-level residual)";
++constexpr const char* kActive = "persistent low-level residual vs reference (not evidence of a watermark by itself)";
+ }
+ 
++WatermarkDetector::WatermarkDetector(double sampleRate, double sensitivity) { prepare(sampleRate, sensitivity); }
++
+ void WatermarkDetector::prepare(double sampleRate, double sensitivity)
+ {
+-    sampleRate_  = sampleRate > 0.0 ? sampleRate : 48000.0;
+-    sensitivity_ = std::clamp(sensitivity, 1.0, 100.0);
+-    prevRef_ = prevLive_ = prevDelta_ = 0.0;
+-    smoothedStego_ = 0.0;
+-    deltaHistory_.clear();
++    const double sr = sanitizeSampleRate(sampleRate);
++    const double sens = std::clamp(std::isfinite(sensitivity) ? sensitivity : 5.0, 1.0, 100.0);
++    floorDb_ = std::clamp(-60.0 + 2.0 * (sens - 5.0), -80.0, -40.0);
++    block_ = static_cast<std::size_t>(std::llround(kBlockSec * sr));
++    alpha_ = 1.0 - std::exp(-kBlockSec / kTauSec);
++    count_ = 0; sumRes_ = sumRef_ = 0.0; hits_ = misses_ = 0;
++    levels_.clear();
++    result_ = DetectorResult{};
++    result_.label = kIdle;
+ }
+ 
+-DetectorResult WatermarkDetector::process(double liveSample, double referenceSample) noexcept
++DetectorResult WatermarkDetector::process(double live, double reference) noexcept
+ {
+-    const double delta = liveSample - referenceSample;
+-
+-    // Phase-deviation term: watermarking schemes that phase-modulate a
+-    // reference carrier show up as a nonzero cross term here even when
+-    // magnitude differences are negligible.
+-    const double phaseDeviation = std::abs(liveSample * prevRef_ - referenceSample * prevLive_);
+-    prevRef_  = referenceSample;
+-    prevLive_ = liveSample;
+-
+-    // Structured-delta ("stego") term: a genuine watermark payload tends to
+-    // change the delta signal in small, consistent steps rather than the
+-    // larger, less-regular jumps typical of ordinary program material.
+-    const bool structuredStep = std::abs(delta - prevDelta_) > (0.000001 * sensitivity_);
+-    prevDelta_ = delta;
+-
+-    deltaHistory_.push_back(delta);
+-    if (deltaHistory_.size() > kHistoryLen)
+-        deltaHistory_.pop_front();
+-
+-    double deltaMean = 0.0;
+-    if (!deltaHistory_.empty())
+-        deltaMean = std::accumulate(deltaHistory_.begin(), deltaHistory_.end(), 0.0) / static_cast<double>(deltaHistory_.size());
+-
+-    double deltaVariance = 0.0;
+-    for (double d : deltaHistory_)
+-        deltaVariance += (d - deltaMean) * (d - deltaMean);
+-    if (!deltaHistory_.empty())
+-        deltaVariance /= static_cast<double>(deltaHistory_.size());
+-
+-    // Low variance + nonzero mean delta over a long window is the signature
+-    // of a persistent, low-amplitude additive watermark rather than transient
+-    // processing artifacts (which tend to have high variance).
+-    const double persistentBias = std::abs(deltaMean);
+-    const double raw = phaseDeviation * 8.0 + (structuredStep ? 0.02 : 0.0) +
+-                        (deltaVariance < 1e-6 ? persistentBias * 40.0 : 0.0);
+-
+-    smoothedStego_ += (raw - smoothedStego_) * 0.004;
+-
+-    const double adaptiveThreshold = 0.0004 * sensitivity_ / 5.0;
+-
+-    DetectorResult result;
+-    result.confidence = std::clamp(smoothedStego_ * (500.0 / std::max(sensitivity_, 1.0)), 0.0, 100.0);
++    const double d = flushDenormal(live - reference);
++    sumRes_ += d * d;
++    sumRef_ += reference * reference;
++    if (++count_ >= block_) { evaluateBlock(); count_ = 0; sumRes_ = sumRef_ = 0.0; }
++    return result_;
++}
+ 
+-    if (smoothedStego_ > adaptiveThreshold * 2.5)
+-    {
+-        result.status = DetectorStatus::Alert;
+-        result.label  = "Structured watermark payload detected";
+-    }
+-    else if (smoothedStego_ > adaptiveThreshold)
+-    {
+-        result.status = DetectorStatus::Active;
+-        result.label  = "Possible watermark residual";
+-    }
+-    else
++void WatermarkDetector::evaluateBlock() noexcept
++{
++    const double n = static_cast<double>(block_);
++    const double refRms = std::sqrt(sumRef_ / n), resRms = std::sqrt(sumRes_ / n);
++    bool hit = false, differ = false;
++    if (refRms >= kMinRefRms)
+     {
+-        result.status = DetectorStatus::Idle;
+-        result.label  = "No watermark signature detected";
++        const double lvl = 20.0 * std::log10(std::max(resRms, 1e-12) / refRms);
++        if (lvl > kCeilingDb) { differ = true; levels_.clear(); }
++        else if (lvl >= floorDb_)
++        {
++            levels_.push(lvl);
++            hit = levels_.full() && std::sqrt(levels_.variance()) <= kMaxStdDb;
++        }
++        else levels_.clear();
+     }
+-    return result;
++    else levels_.clear();
++
++    if (hit) { ++hits_; misses_ = 0; }
++    else { hits_ = 0; if (++misses_ >= 3) { misses_ = 0; result_.status = DetectorStatus::Idle; } }
++    if (hits_ >= 10) result_.status = DetectorStatus::Active;   // 0.5 s sustained; capped at Active
++    result_.confidence += ((hit ? 100.0 : 0.0) - result_.confidence) * alpha_;
++    result_.confidence = flushDenormal(result_.confidence);
++    result_.label = (result_.status == DetectorStatus::Active) ? kActive : (differ ? kDiffer : kIdle);
+ }
+ 
+ } // namespace dawchecker::dsp
+diff -ruN third_party/dawchecker/src/core/WatermarkDetector.h third_party/dawchecker_hardened/src/core/WatermarkDetector.h
+--- third_party/dawchecker/src/core/WatermarkDetector.h	2026-09-09 19:08:36.000000000 +0000
++++ third_party/dawchecker_hardened/src/core/WatermarkDetector.h	2026-10-11 22:55:34.269092902 +0000
+@@ -1,30 +1,29 @@
+ #pragma once
+-#include <deque>
++// HARDENED FORK. Reports how large the difference (live - reference) is relative to the reference, and whether
++// it is persistent. It does NOT identify a watermark: lossy coding, gain, dither or mixing differences also
++// produce low-level residuals. Capped at Active. Argument order is (live, reference), same as the other detectors.
++#include <cstddef>
+ #include "DetectorTypes.h"
++#include "RunningWindow.h"
+ 
+ namespace dawchecker::dsp {
+ 
+-// Detects embedded watermark artifacts by tracking the residual between a
+-// reference (pre-processing / sidechain) signal and the live output —
+-// stable, low-magnitude, structured deltas are consistent with watermark
+-// payloads rather than ordinary processing or noise.
+ class WatermarkDetector
+ {
+ public:
+     explicit WatermarkDetector(double sampleRate = 48000.0, double sensitivity = 5.0);
+-
+-    void prepare(double sampleRate, double sensitivity);
+-    DetectorResult process(double liveSample, double referenceSample) noexcept;
+-
+-    double lastDelta() const noexcept { return prevDelta_; }
++    void prepare(double sampleRate, double sensitivity = 5.0);
++    DetectorResult process(double liveSample, double referenceSample) noexcept;   // real-time safe
+ 
+ private:
+-    double sampleRate_  = 48000.0;
+-    double sensitivity_ = 5.0;
+-    double prevRef_ = 0.0, prevLive_ = 0.0, prevDelta_ = 0.0;
+-    double smoothedStego_ = 0.0;
+-    std::deque<double> deltaHistory_; // short ring buffer for structure analysis
+-    static constexpr std::size_t kHistoryLen = 256;
++    void evaluateBlock() noexcept;
++
++    std::size_t block_ = 2400, count_ = 0;
++    double sumRes_ = 0.0, sumRef_ = 0.0;
++    double floorDb_ = -60.0, alpha_ = 0.5;
++    int hits_ = 0, misses_ = 0;
++    RunningWindow<8> levels_;
++    DetectorResult result_{};
+ };
+ 
+ } // namespace dawchecker::dsp

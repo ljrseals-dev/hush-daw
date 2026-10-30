@@ -1,0 +1,20 @@
+{
+  "id": "hush-cyan",
+  "name": "HUSH Cyan Studio",
+  "background": "#0b1220",
+  "surface": "#121a2b",
+  "panel": "#1a2438",
+  "accent": "#3de7ff",
+  "accent_dim": "#1a8a9a",
+  "text": "#e8f4ff",
+  "text_muted": "#8aa0b8",
+  "danger": "#ff5c5c",
+  "success": "#3dff9a",
+  "fader_track": "#243044",
+  "fader_fill": "#3de7ff",
+  "meter_ok": "#3dff9a",
+  "meter_warn": "#ffcc33",
+  "meter_clip": "#ff5c5c",
+  "font_ui": "Inter, sans-serif",
+  "radius_px": 8
+}

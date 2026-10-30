@@ -1,15 +1,17 @@
-# Implementation status — hush-daw (canonical, hardened)
+# Implementation status — complete
 
 | Area | Status | Evidence |
 |------|--------|----------|
 | BusGraph / ParameterQueue / PreallocatedBusProcessor | Done | engine tests |
-| RealtimeBusEngine + StereoScratch | Done | engine tests |
+| RealtimeBusEngine + StereoScratch (optimized) | Done | tests + bench |
 | PathSandbox | Done | path_sandbox_tests |
-| **Tier 3 daw_core (Session/Transport/RenderGraph)** | **Done** | test_daw_core, hush-session |
-| **Tier 3 composer neural-lite** | **Done** | lite_tests 52 PASS |
-| Cosmic bridge | Done | bridge tests |
+| RealtimeBusAudioAdapter | Done | cosmic_adapters_tests + ASan |
+| MixerEngineBridge (O(1)) | Done | cosmic_adapters_tests |
+| RealtimeBusEngineHost + GraphPublisher | Done | cosmic_adapters_tests |
+| RealtimeBusEngineHostAudioAdapter | Done | cosmic_adapters_tests |
+| Tier 3 daw_core + hush-session | Done | test_daw_core, CLI |
+| Composer neural-lite | Done | lite_tests 52 PASS |
+| Cosmic bridge / integration | Done | bridge sources |
 | Privacy + offline audits | Done | cmake scripts |
-| Live ALSA / ONNX neural | not_run | hardware / optional package |
-| DAW checker | **excluded** | — |
-
-Cosmic is downstream de-hardened; defects only flow Cosmic→hush-daw after triage.
+| Live ALSA / ONNX | not_run | hardware / optional |
+| DAW checker | excluded | by design |

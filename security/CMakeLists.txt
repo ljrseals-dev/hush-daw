@@ -1,0 +1,10 @@
+add_library(hush_security STATIC src/DawChecker.cpp)
+target_include_directories(hush_security PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_compile_features(hush_security PUBLIC cxx_std_20)
+add_library(hush::security ALIAS hush_security)
+
+if(HUSH_BUILD_TESTS)
+  add_executable(hush_dawchecker_tests tests/dawchecker_tests.cpp)
+  target_link_libraries(hush_dawchecker_tests PRIVATE hush_security)
+  add_test(NAME hush_dawchecker_tests COMMAND hush_dawchecker_tests)
+endif()

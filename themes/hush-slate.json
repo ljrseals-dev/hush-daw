@@ -1,0 +1,20 @@
+{
+  "id": "hush-slate",
+  "name": "HUSH Slate Forensic",
+  "background": "#121212",
+  "surface": "#1c1c1c",
+  "panel": "#262626",
+  "accent": "#a0a0a0",
+  "accent_dim": "#666666",
+  "text": "#f0f0f0",
+  "text_muted": "#9a9a9a",
+  "danger": "#e74c3c",
+  "success": "#2ecc71",
+  "fader_track": "#333333",
+  "fader_fill": "#c0c0c0",
+  "meter_ok": "#2ecc71",
+  "meter_warn": "#f1c40f",
+  "meter_clip": "#e74c3c",
+  "font_ui": "IBM Plex Sans, sans-serif",
+  "radius_px": 4
+}

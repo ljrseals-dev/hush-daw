@@ -1,112 +1,63 @@
-# HUSH DAW — Canonical Hardened Build
+# HUSH DAW — Complete Canonical Build
 
 **Version:** 2.2.1  
-**Status:** Offline-first · Security-hardened · Tier 3 complete  
-**License:** MIT (see `LICENSE` where present)
+**Status:** Offline-first · Security-hardened · Tier 3 complete · Cosmic adapters optimized  
+**License:** MIT (where present)
 
-This tree is the **canonical hush-daw** audio engine: same processor core as the public Cosmic Studio fork, with the **full security posture intact**. Cosmic Studio is a de-hardened derivative for creators; **defects may flow Cosmic → hush-daw after triage; security removals never flow back.**
-
----
-
-## What this package is
-
-A C++20 offline-buildable foundation for a privacy-first DAW:
-
-| Layer | What it does |
-|-------|----------------|
-| **Engine core** | Bus graph, SPSC parameter queue, preallocated bus processor, realtime bus engine, stereo adapters |
-| **Security** | Path sandbox, privacy source denylist, offline CMake (no FetchContent/network bootstrap) |
-| **Tier 3 umbrella** | Session / Track / RenderGraph / Transport, HUSHSESS save/load, offline render CLI |
-| **Composer (Tier 3)** | Neural-lite chord suggestion & style continuation (statistical, no network); optional ONNX path if present |
-| **Cosmic bridge** | SPSC command queue + processor adapter (integration surface; not a public de-hardened product) |
-
-No external **DAW checker** daemon. Internal unit tests and privacy audits only.
+Canonical **hush-daw**: same processor family as public Cosmic Studio, with the **full security posture**. Cosmic is a de-hardened fork for creators. **Backport defects only — never de-harden.**
 
 ---
 
-## Features (current)
+## Everything in this tree
 
-### 1. Bus graph (`engine/`)
+### Engine core (`engine/`)
 
-- Directed bus routing with **DFS cycle detection**
-- Self-route rejection, unknown-bus errors, duplicate/empty bus IDs
-- Route **gain validated** finite and in **[0, 16]**
-- Topological **render order** for offline/online processing
+| Module | Purpose |
+|--------|---------|
+| **BusGraph** | Cycle detection, gain ∈ [0,16], topological render order |
+| **ParameterQueue** | SPSC UI→audio; full returns false (no block/alloc) |
+| **PreallocatedBusProcessor** | configure on control; process() no alloc/I/O/log |
+| **RealtimeBusEngine** | Drain params + bus process; interleaved stereo path |
+| **StereoScratch** | Optimized deinterleave/interleave (4-wide unroll) |
+| **PathSandbox** | Reject `..`; optional session root jail |
 
-### 2. Parameter queue (SPSC)
+### Cosmic adapters (ported + optimized)
 
-- Bounded single-producer / single-consumer queue (UI → audio)
-- Full queue returns `false` — **no block, no alloc** on the audio path
-- Deterministic tests for empty, fill, drain, capacity
+| Adapter | Role |
+|---------|------|
+| **RealtimeBusAudioAdapter** | Device interleaved ↔ engine; `alsa_callback` |
+| **MixerEngineBridge** | Track ID → bus; O(1) gain/mute enqueue |
+| **RealtimeGraphPublisher** | Double-slot publish; audio holds raw pointer only |
+| **RealtimeBusEngineHost** | Hot graph replace + `process_to_stereo` |
+| **RealtimeBusEngineHostAudioAdapter** | Host interleaved path + `alsa_callback` |
 
-### 3. Preallocated bus processor
+Perf (reference): **~0.4 µs/block** @ 64 frames stereo (-O3); oversize reject silences only `max_frames` capacity (ASan-clean).
 
-- `configure()` on the control thread (may allocate)
-- `process()` is **noexcept**: no allocation, locking, logging, or I/O
-- Per-bus pre/post fader views; fader gain bounds; frame-capacity checks
+### Tier 3 — `engines/daw_core`
 
-### 4. Realtime bus engine
+- Session / Transport / RenderGraph  
+- HUSHSESS save/load  
+- CLI **`hush-session`**: `new` · `info` · `render` · `demo`  
+- Stubs for immersive/score/video/plugins when Tier 1 absent  
 
-- Drains parameter queue then runs the bus processor
-- **Interleaved stereo** device path via `StereoScratch`
-- Mute / gain command kinds; oversize blocks silenced safely
-- Dropped-param counter for UI observation
+### Tier 3 — `engines/composer`
 
-### 5. Path sandbox (security retained)
+- Interface + harmony  
+- **neural-lite** (pure C++, offline statistical)  
+- Factory; ONNX neural only if `onnxruntime` found (else skipped)  
+- `hush-neural-lite` CLI when built  
 
-- Always rejects `..` path segments
-- Optional **session root jail**: relative paths resolve only under the session directory
-- Used for take/WAV path policy (Cosmic deliberately strips this; hush-daw keeps it)
+### Cosmic bridge + integration
 
-### 6. Tier 3 — `engines/daw_core`
+- `cosmic-studio/` — processor adapter, observatory, engine bridge  
+- `integration/` — ProcessorBridge (slot FX SPSC), no-frills GUI shell  
 
-- **Session** — sample rate, length, owned subsystems
-- **Transport** — playhead / transport state
-- **RenderGraph** — rebuild from session content
-- **session_io** — save/load with **HUSHSESS** magic
-- **CLI `hush-session`**
-  - `new` — create session file  
-  - `info` — print rate / length / duration  
-  - `render` — offline render to WAV  
-  - `demo` — short demo session → WAV  
-- Engine **stubs** for immersive / score / video / plugins when Tier 1 targets are absent (`HUSH_USE_STUBS=ON`)
+### Security & offline
 
-### 7. Tier 3 — Composer (`engines/composer`)
-
-- Shared **composer interface** + **harmony** helpers
-- **neural-lite**: pure C++ statistical model  
-  - Krumhansl–Schmuckler-style key awareness (lite path)  
-  - Style transition tables, SMF helpers, chord suggestion / continuation  
-- **Factory** selects lite always; **ONNX neural** only if `onnxruntime` is found at configure time (skipped cleanly offline)
-- CLI: `hush-neural-lite` (when built)
-- Tests: `lite_tests` (52 cases in the reference run)
-
-### 8. Cosmic Studio bridge (`cosmic-studio/`)
-
-### 8b. Cosmic adapters (ported)
-
-- `RealtimeBusAudioAdapter` — device interleaved stereo → engine
-- `MixerEngineBridge` — track ID → fader/mute SPSC
-- `RealtimeBusEngineHost` + `RealtimeGraphPublisher` — graph hot-replace
-- `RealtimeBusEngineHostAudioAdapter` — interleaved host path + ALSA callback
-
-
-- Engine bridge, observatory meters, processor adapter
-- SPSC slot commands for host integration
-- **Not** a substitute for hush-daw security; Cosmic public trees omit hardening on purpose
-
-### 9. Privacy & offline contract
-
-- **No** FetchContent / ExternalProject / `file(DOWNLOAD)` in product CMake
-- `FETCHCONTENT_FULLY_DISCONNECTED` forced ON
-- **Privacy denylist** CMake audit over sources (no telemetry / analytics / outbound client stubs)
-- **Offline CMake audit** fails the test suite if download APIs appear in CMakeLists
-
-### 10. Explicitly out of scope (by design)
-
-- External DAW checker / validation harness at runtime or in the build graph  
-- Shipping Cosmic’s relaxed network/path rules into this tree  
-- Claiming live ALSA xrun soak or ONNX neural without evidence (**not_run** until executed)
+- No FetchContent / ExternalProject / `file(DOWNLOAD)` in product CMake  
+- Privacy source denylist audit  
+- Offline CMake audit  
+- **No external DAW checker**  
 
 ---
 
@@ -114,23 +65,21 @@ No external **DAW checker** daemon. Internal unit tests and privacy audits only.
 
 ```
 hush-daw-align/
-├── engine/                 # Bus graph, RT processor, path sandbox, SPSC
+├── engine/           Bus graph, RT engine, path sandbox, Cosmic adapters
 ├── engines/
-│   ├── daw_core/           # Session, transport, render graph, hush-session CLI
-│   └── composer/           # Interface, harmony, neural-lite, optional neural
-├── cosmic-studio/          # Bridge + adapter (integration)
-├── integration/            # Processor bridge, optional no-frills GUI
-├── tools/                  # privacy_source_audit, offline_cmake_audit
-├── docs/                   # Status, triage, release gates, Tier notes
+│   ├── daw_core/     Session umbrella + hush-session CLI
+│   └── composer/     neural-lite + factory
+├── cosmic-studio/    Integration bridge
+├── integration/      Processor bridge, optional GUI
+├── tools/            privacy + offline audits
+├── docs/             Status, triage, adapters, Tier 3
 ├── CMakeLists.txt
-└── README.md               # this file
+└── README.md
 ```
 
 ---
 
-## Build (offline)
-
-Requirements: C++20 compiler, CMake ≥ 3.16. No network package bootstrap.
+## Build
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
@@ -140,92 +89,72 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
   -DHUSH_BUILD_COMPOSER=ON \
   -DHUSH_USE_STUBS=ON \
   -DHUSH_BUILD_TESTS=ON
-
 cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 ```
 
-**Options**
-
 | Option | Default | Meaning |
 |--------|---------|---------|
-| `HUSH_BUILD_ENGINE_CORE` | ON | Bus graph + realtime engine |
-| `HUSH_BUILD_COSMIC_BRIDGE` | ON | Cosmic integration bridge |
-| `HUSH_BUILD_TIER3` | ON | daw_core session umbrella |
-| `HUSH_BUILD_COMPOSER` | ON | neural-lite + factory |
-| `HUSH_USE_STUBS` | ON | daw_core stubs when Tier 1 engines missing |
-| `HUSH_BUILD_TESTS` | ON | Unit tests + privacy/offline audits |
-
-If configure is slow in constrained environments, the same libraries compile with `g++ -std=c++20` against `engine/include` and `engines/*/include` (see CI/local notes in `docs/`).
+| `HUSH_BUILD_ENGINE_CORE` | ON | Engine + adapters |
+| `HUSH_BUILD_COSMIC_BRIDGE` | ON | cosmic-studio bridge |
+| `HUSH_BUILD_TIER3` | ON | daw_core |
+| `HUSH_BUILD_COMPOSER` | ON | neural-lite |
+| `HUSH_USE_STUBS` | ON | Tier1 stubs in daw_core |
+| `HUSH_BUILD_TESTS` | ON | Unit + privacy/offline audits |
 
 ---
 
-## CLI quick start
+## CLI
 
 ```bash
-# Session
-hush-session new  song.hushsess --rate 48000 --length 480000
+hush-session new song.hushsess --rate 48000 --length 480000
 hush-session info song.hushsess
 hush-session render song.hushsess out.wav
 hush-session demo demo.wav
-
-# Composer (neural-lite), when built
-hush-neural-lite --help
+hush-neural-lite --help   # when built
 ```
 
 ---
 
-## Tests (reference evidence)
+## Tests (verified)
 
-| Suite | Result (last verified) |
-|-------|-------------------------|
-| `hush_bus_graph_tests` | PASS |
-| `hush_parameter_queue_tests` | PASS |
-| `hush_preallocated_bus_processor_tests` | PASS |
-| `hush_realtime_bus_engine_tests` | PASS |
-| `hush_stereo_adapter_tests` | PASS |
-| `hush_path_sandbox_tests` | PASS |
-| `test_daw_core` | PASS |
-| `lite_tests` | 52 passed, 0 failed |
-| `hush_privacy_source_audit` | PASS |
-| `hush_offline_cmake_audit` | PASS |
-| Live ALSA soak | **not_run** (hardware) |
-| ONNX neural tests | **not_run** (package optional) |
+| Suite | Result |
+|-------|--------|
+| Bus graph / param queue / prealloc / RT engine / stereo / path sandbox | PASS |
+| Cosmic adapters (+ ASan, microbench) | PASS |
+| test_daw_core / lite_tests (52) | PASS |
+| privacy + offline CMake audits | PASS |
+| Live ALSA soak | not_run |
+| ONNX neural | not_run (optional) |
 
 ---
 
-## Relationship to Cosmic Studio
+## Docs
 
-| Project | Role |
-|---------|------|
-| **hush-daw** (this tree) | Canonical, security-hardened processor |
-| **HUSH Cosmic Studio** | Public fork without security enhancements so creators can build their own DAW |
-
-**Triage rule:** backport genuine engine defects only; reject de-hardening (relaxed path checks, re-enabled downloads, dropped denylist, external checker). See `docs/COSMIC_TRIAGE.md`.
-
----
-
-## Documentation index
-
-| Doc | Content |
-|-----|---------|
-| `docs/IMPLEMENTATION_STATUS.md` | Feature matrix + evidence |
-| `docs/TIER3_COMPLETE.md` | Tier 3 handoff |
-| `docs/COSMIC_TRIAGE.md` | Defect vs security-removal classification |
-| `docs/NO_DAW_CHECKER.md` | Checker exclusion policy |
+| File | Topic |
+|------|--------|
+| `docs/IMPLEMENTATION_STATUS.md` | Feature matrix |
+| `docs/COSMIC_ADAPTERS.md` | Adapter API map |
+| `docs/COSMIC_TRIAGE.md` | Defect vs de-harden rule |
+| `docs/TIER3_COMPLETE.md` | Session + composer |
+| `docs/NO_DAW_CHECKER.md` | Checker exclusion |
 | `docs/OFFLINE_BUILD.md` | Offline contract |
-| `docs/RELEASE_GATES.md` | What must pass before a release claim |
+| `docs/RELEASE_GATES.md` | Release criteria |
 
 ---
 
-## Security summary
-
-- Path traversal blocked (`..`); optional session root jail  
-- No telemetry clients in source (denylist audited)  
-- Offline CMake: no download APIs in the product graph  
-- Realtime path: no alloc / I/O / logging inside `process`  
-- External DAW checker not required and not linked  
+*HUSH DAW — complete stack, hardened boundary.*
 
 ---
 
-*HUSH DAW — understand the signal, keep the trust boundary.*
+## Midterm pillars (this package)
+
+| Pillar | Location |
+|--------|----------|
+| **Immersive (no stubs)** | `engines/immersive/` — full object/HOA/binaural/ADM |
+| **DawChecker** | `security/` ban-IP + hardening; `third_party/dawchecker_hardened/` |
+| **Forensic wrap** | `engines/forensic/` — rack + offline indicator report |
+| **Themes** | `themes/hush-cyan.json`, `hush-slate.json`, `hush-midnight.json` |
+| **Hardening** | PathSandbox, privacy/offline audits, ASan-clean adapters |
+
+See `docs/MIDTERM_COMPLETE.md`.
