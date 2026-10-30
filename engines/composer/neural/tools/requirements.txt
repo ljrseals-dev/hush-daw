@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 ljrseals-dev
+#
+# Pinned versions. Deterministic training depends on these exact
+# versions; bumping them changes the weights and invalidates the
+# checked-in fixtures.
+torch==2.2.2
+onnx==1.16.1
+onnxruntime==1.18.0
+numpy==1.26.4

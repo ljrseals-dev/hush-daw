@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 ljrseals-dev
+#
+# 16 token ids produced by train.py --seed 7 on the shipped model.
+# Populate by running:
+#   cd tools && python train.py --seed 42 --out ../model/model.onnx 2>&1 \
+#     | grep '^seed=7:' | sed 's/^seed=7: //'
+#
+# PLACEHOLDER — replace with real values after training
+0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
