@@ -83,6 +83,14 @@ No external **DAW checker** daemon. Internal unit tests and privacy audits only.
 
 ### 8. Cosmic Studio bridge (`cosmic-studio/`)
 
+### 8b. Cosmic adapters (ported)
+
+- `RealtimeBusAudioAdapter` — device interleaved stereo → engine
+- `MixerEngineBridge` — track ID → fader/mute SPSC
+- `RealtimeBusEngineHost` + `RealtimeGraphPublisher` — graph hot-replace
+- `RealtimeBusEngineHostAudioAdapter` — interleaved host path + ALSA callback
+
+
 - Engine bridge, observatory meters, processor adapter
 - SPSC slot commands for host integration
 - **Not** a substitute for hush-daw security; Cosmic public trees omit hardening on purpose

@@ -43,6 +43,7 @@ public:
     return dropped_params_.load(std::memory_order_relaxed);
   }
   [[nodiscard]] bool configured() const noexcept { return configured_; }
+  [[nodiscard]] std::size_t bus_count() const noexcept { return gains_.size(); }
   [[nodiscard]] std::size_t max_frames() const noexcept { return max_frames_; }
 
 private:

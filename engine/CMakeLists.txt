@@ -3,6 +3,10 @@ add_library(hush_engine_core STATIC
   src/preallocated_bus_processor.cpp
   src/realtime_bus_engine.cpp
   src/path_sandbox.cpp
+  src/realtime_bus_audio_adapter.cpp
+  src/mixer_engine_bridge.cpp
+  src/realtime_bus_engine_host.cpp
+  src/realtime_bus_engine_host_audio_adapter.cpp
 )
 target_include_directories(hush_engine_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(hush_engine_core PUBLIC cxx_std_20)
@@ -36,4 +40,8 @@ if(HUSH_BUILD_TESTS)
   add_executable(hush_path_sandbox_tests tests/path_sandbox_tests.cpp)
   target_link_libraries(hush_path_sandbox_tests PRIVATE hush_engine_core)
   add_test(NAME hush_path_sandbox_tests COMMAND hush_path_sandbox_tests)
+
+  add_executable(hush_cosmic_adapters_tests tests/cosmic_adapters_tests.cpp)
+  target_link_libraries(hush_cosmic_adapters_tests PRIVATE hush_engine_core)
+  add_test(NAME hush_cosmic_adapters_tests COMMAND hush_cosmic_adapters_tests)
 endif()

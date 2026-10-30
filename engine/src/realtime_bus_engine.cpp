@@ -21,15 +21,15 @@ bool RealtimeBusEngine::configure(const BusGraph& graph, std::size_t max_frames,
 
 void RealtimeBusEngine::drain_params() noexcept {
   ParamCommand cmd;
+  const std::size_t n = gains_.size();
   while (params_.try_pop(cmd)) {
-    if (cmd.target >= gains_.size()) continue;
-    if (cmd.kind == 0) {  // gain
-      if (std::isfinite(cmd.value) && cmd.value >= 0.f && cmd.value <= 16.f)
-        gains_[cmd.target] = cmd.value;
-    } else if (cmd.kind == 2) {  // mute: value>0.5 → mute
+    if (cmd.target >= n) continue;
+    if (cmd.kind == 0) {
+      const float v = cmd.value;
+      if (v >= 0.f && v <= 16.f) gains_[cmd.target] = v;  // isfinite implied for normal floats in range
+    } else if (cmd.kind == 2) {
       gains_[cmd.target] = (cmd.value > 0.5f) ? 0.f : 1.f;
     }
-    // pan (kind 1) reserved — stereo bus processor is sum path for now
   }
 }
 
@@ -46,8 +46,8 @@ RealtimeProcessStatus RealtimeBusEngine::process_block(BusInputView* inputs,
   drain_params();
 
   if (inputs && input_count == gains_.size()) {
-    for (std::size_t i = 0; i < input_count; ++i)
-      inputs[i].fader_gain = gains_[i];
+    const float* g = gains_.data();
+    for (std::size_t i = 0; i < input_count; ++i) inputs[i].fader_gain = g[i];
   }
 
   const auto st = processor_.process(inputs, input_count, frames);
@@ -74,13 +74,12 @@ RealtimeProcessStatus RealtimeBusEngine::process_block(BusInputView* inputs,
   return RealtimeProcessStatus::Ok;
 }
 
-bool RealtimeBusEngine::process_interleaved(const float* in, float* out,
-                                            std::size_t frames,
+bool RealtimeBusEngine::process_interleaved(const float* in, float* out, std::size_t frames,
                                             std::size_t input_bus_index,
                                             std::size_t master_bus_index) noexcept {
   if (!configured_ || !out) return false;
   if (frames > max_frames_) {
-    if (out) std::memset(out, 0, frames * 2 * sizeof(float));
+    std::memset(out, 0, max_frames_ * 2 * sizeof(float));
     return false;
   }
 
@@ -94,11 +93,12 @@ bool RealtimeBusEngine::process_interleaved(const float* in, float* out,
   }
 
   const std::size_t n = bus_views_.size();
+  float* sil = silence_.data();
   for (std::size_t i = 0; i < n; ++i) {
     if (i == input_bus_index) {
       bus_views_[i] = {scratch_in_.left(), scratch_in_.right(), gains_[i]};
     } else {
-      bus_views_[i] = {silence_.data(), silence_.data(), gains_[i]};
+      bus_views_[i] = {sil, sil, gains_[i]};
     }
   }
 

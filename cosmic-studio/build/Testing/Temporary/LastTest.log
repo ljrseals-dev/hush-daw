@@ -1,0 +1,33 @@
+Start testing: Oct 29 19:54 UTC
+----------------------------------------------------------
+1/2 Testing: hush_cosmic_bridge_contract
+1/2 Test: hush_cosmic_bridge_contract
+Command: "/home/workdir/artifacts/hush-daw-align/cosmic-studio/build/hush_cosmic_bridge_test"
+Directory: /home/workdir/artifacts/hush-daw-align/cosmic-studio/build
+"hush_cosmic_bridge_contract" start time: Oct 29 19:54 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Failed.
+"hush_cosmic_bridge_contract" end time: Oct 29 19:54 UTC
+"hush_cosmic_bridge_contract" time elapsed: 00:00:00
+----------------------------------------------------------
+
+2/2 Testing: hush_cosmic_processor_adapter_contract
+2/2 Test: hush_cosmic_processor_adapter_contract
+Command: "/home/workdir/artifacts/hush-daw-align/cosmic-studio/build/hush_cosmic_processor_adapter_test"
+Directory: /home/workdir/artifacts/hush-daw-align/cosmic-studio/build
+"hush_cosmic_processor_adapter_contract" start time: Oct 29 19:54 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Failed.
+"hush_cosmic_processor_adapter_contract" end time: Oct 29 19:54 UTC
+"hush_cosmic_processor_adapter_contract" time elapsed: 00:00:00
+----------------------------------------------------------
+
+End testing: Oct 29 19:54 UTC

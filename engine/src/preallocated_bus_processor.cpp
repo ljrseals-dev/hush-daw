@@ -64,52 +64,100 @@ RealtimeProcessStatus PreallocatedBusProcessor::process(const BusInputView* inpu
   for (std::size_t i = 0; i < input_count; ++i) {
     if (inputs[i].left == nullptr || inputs[i].right == nullptr)
       return RealtimeProcessStatus::NullChannel;
-    if (!std::isfinite(inputs[i].fader_gain) || inputs[i].fader_gain < 0.f ||
-        inputs[i].fader_gain > 16.f)
+    const float g = inputs[i].fader_gain;
+    if (!std::isfinite(g) || g < 0.f || g > 16.f)
       return RealtimeProcessStatus::InvalidFaderGain;
   }
 
-  // Clear bus accumulators (preallocated; no heap)
+  const std::size_t bytes = frame_count * sizeof(float);
+
+  // Clear only pre (post written fully below)
   for (auto& b : buses_) {
-    std::memset(b.pre_left.data(), 0, frame_count * sizeof(float));
-    std::memset(b.pre_right.data(), 0, frame_count * sizeof(float));
-    std::memset(b.post_left.data(), 0, frame_count * sizeof(float));
-    std::memset(b.post_right.data(), 0, frame_count * sizeof(float));
+    std::memset(b.pre_left.data(), 0, bytes);
+    std::memset(b.pre_right.data(), 0, bytes);
   }
 
-  // Mix inputs into bus pre buffers in render order
+  // Stage 1: inputs → pre, then post = pre * fader (in render order)
   for (std::size_t bi : render_order_) {
     auto& bus = buses_[bi];
     const auto& in = inputs[bi];
-    for (std::size_t f = 0; f < frame_count; ++f) {
-      bus.pre_left[f] += in.left[f];
-      bus.pre_right[f] += in.right[f];
-    }
+    float* __restrict pl = bus.pre_left.data();
+    float* __restrict pr = bus.pre_right.data();
+    float* __restrict ol = bus.post_left.data();
+    float* __restrict or_ = bus.post_right.data();
+    const float* __restrict il = in.left;
+    const float* __restrict ir = in.right;
     const float g = in.fader_gain;
-    for (std::size_t f = 0; f < frame_count; ++f) {
-      bus.post_left[f] = bus.pre_left[f] * g;
-      bus.post_right[f] = bus.pre_right[f] * g;
+
+    if (g == 1.0f) {
+      for (std::size_t f = 0; f < frame_count; ++f) {
+        pl[f] += il[f];
+        pr[f] += ir[f];
+        ol[f] = pl[f];
+        or_[f] = pr[f];
+      }
+    } else if (g == 0.0f) {
+      for (std::size_t f = 0; f < frame_count; ++f) {
+        pl[f] += il[f];
+        pr[f] += ir[f];
+        ol[f] = 0.f;
+        or_[f] = 0.f;
+      }
+    } else {
+      for (std::size_t f = 0; f < frame_count; ++f) {
+        pl[f] += il[f];
+        pr[f] += ir[f];
+        ol[f] = pl[f] * g;
+        or_[f] = pr[f] * g;
+      }
     }
   }
 
-  // Apply routes (send accumulation into destination pre, then recompute post)
-  for (const auto& r : routes_) {
-    auto& src = buses_[r.source];
-    auto& dst = buses_[r.destination];
-    const float* sl = (r.tap == SendTap::PreFader) ? src.pre_left.data() : src.post_left.data();
-    const float* sr = (r.tap == SendTap::PreFader) ? src.pre_right.data() : src.post_right.data();
-    for (std::size_t f = 0; f < frame_count; ++f) {
-      dst.pre_left[f] += sl[f] * r.gain;
-      dst.pre_right[f] += sr[f] * r.gain;
+  // Stage 2: routes accumulate into destination pre, then refresh destination post
+  if (!routes_.empty()) {
+    for (const auto& r : routes_) {
+      auto& src = buses_[r.source];
+      auto& dst = buses_[r.destination];
+      const float* __restrict sl =
+          (r.tap == SendTap::PreFader) ? src.pre_left.data() : src.post_left.data();
+      const float* __restrict sr =
+          (r.tap == SendTap::PreFader) ? src.pre_right.data() : src.post_right.data();
+      float* __restrict dl = dst.pre_left.data();
+      float* __restrict dr = dst.pre_right.data();
+      const float rg = r.gain;
+      if (rg == 1.0f) {
+        for (std::size_t f = 0; f < frame_count; ++f) {
+          dl[f] += sl[f];
+          dr[f] += sr[f];
+        }
+      } else {
+        for (std::size_t f = 0; f < frame_count; ++f) {
+          dl[f] += sl[f] * rg;
+          dr[f] += sr[f] * rg;
+        }
+      }
     }
-  }
-  // Refresh post for destinations that received sends (simple: all buses)
-  for (std::size_t bi : render_order_) {
-    auto& bus = buses_[bi];
-    const float g = inputs[bi].fader_gain;
-    for (std::size_t f = 0; f < frame_count; ++f) {
-      bus.post_left[f] = bus.pre_left[f] * g;
-      bus.post_right[f] = bus.pre_right[f] * g;
+    // Refresh post only for destinations that received sends (all destinations in routes)
+    // Safer: refresh all buses' post from pre * fader (single pass)
+    for (std::size_t bi : render_order_) {
+      auto& bus = buses_[bi];
+      const float g = inputs[bi].fader_gain;
+      float* __restrict ol = bus.post_left.data();
+      float* __restrict or_ = bus.post_right.data();
+      const float* __restrict pl = bus.pre_left.data();
+      const float* __restrict pr = bus.pre_right.data();
+      if (g == 1.0f) {
+        std::memcpy(ol, pl, bytes);
+        std::memcpy(or_, pr, bytes);
+      } else if (g == 0.0f) {
+        std::memset(ol, 0, bytes);
+        std::memset(or_, 0, bytes);
+      } else {
+        for (std::size_t f = 0; f < frame_count; ++f) {
+          ol[f] = pl[f] * g;
+          or_[f] = pr[f] * g;
+        }
+      }
     }
   }
 
@@ -118,15 +166,13 @@ RealtimeProcessStatus PreallocatedBusProcessor::process(const BusInputView* inpu
 
 StereoConstView PreallocatedBusProcessor::pre_fader(std::size_t bus_index,
                                                     std::size_t frames) const noexcept {
-  if (!configured_ || bus_index >= buses_.size() || frames > max_frames_)
-    return {};
+  if (!configured_ || bus_index >= buses_.size() || frames > max_frames_) return {};
   return {buses_[bus_index].pre_left.data(), buses_[bus_index].pre_right.data(), frames};
 }
 
 StereoConstView PreallocatedBusProcessor::post_fader(std::size_t bus_index,
                                                      std::size_t frames) const noexcept {
-  if (!configured_ || bus_index >= buses_.size() || frames > max_frames_)
-    return {};
+  if (!configured_ || bus_index >= buses_.size() || frames > max_frames_) return {};
   return {buses_[bus_index].post_left.data(), buses_[bus_index].post_right.data(), frames};
 }
 

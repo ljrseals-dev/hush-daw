@@ -1,0 +1,5 @@
+/home/workdir/artifacts/hush-daw-align/cosmic-studio/build/CMakeFiles/hush_cosmic_bridge_test.dir
+/home/workdir/artifacts/hush-daw-align/cosmic-studio/build/CMakeFiles/hush_cosmic_processor_adapter_test.dir
+/home/workdir/artifacts/hush-daw-align/cosmic-studio/build/CMakeFiles/test.dir
+/home/workdir/artifacts/hush-daw-align/cosmic-studio/build/CMakeFiles/edit_cache.dir
+/home/workdir/artifacts/hush-daw-align/cosmic-studio/build/CMakeFiles/rebuild_cache.dir

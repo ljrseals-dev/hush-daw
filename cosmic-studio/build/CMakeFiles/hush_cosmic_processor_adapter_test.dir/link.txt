@@ -1,0 +1,1 @@
+/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/hush_cosmic_processor_adapter_test.dir/tests/processor_adapter_test.cpp.o -o hush_cosmic_processor_adapter_test 
