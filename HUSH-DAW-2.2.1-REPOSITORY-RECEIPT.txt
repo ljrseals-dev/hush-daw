@@ -1,0 +1,67 @@
+================================================================================
+HUSH DAW — REPOSITORY RECEIPT
+================================================================================
+Product          : HUSH DAW (canonical, security-hardened)
+Version          : 2.2.1
+Package          : HUSH-DAW-2.2.1-REPOSITORY.zip
+Generated        : 2026-10-30
+Root directory   : hush-daw-align/
+
+--------------------------------------------------------------------------------
+INTEGRITY
+--------------------------------------------------------------------------------
+SHA-256          : 941a1d6812973844b3826ba8dc764df75e3fc15b67b70bddbdb79080f2edc63e
+Byte size        : 2127122
+Archive entries  : 169
+SHA-256 file     : HUSH-DAW-2.2.1-REPOSITORY.zip.sha256
+
+Verify:
+  sha256sum -c HUSH-DAW-2.2.1-REPOSITORY.zip.sha256
+
+--------------------------------------------------------------------------------
+CONTENTS (logical)
+--------------------------------------------------------------------------------
+  README.md                 Full feature documentation
+  CMakeLists.txt            Offline-first root build
+  engine/                   Bus graph, SPSC queue, RT bus engine, path sandbox
+  engines/daw_core/         Session, Transport, RenderGraph, HUSHSESS, hush-session CLI
+  engines/composer/         neural-lite + factory (ONNX optional)
+  cosmic-studio/            Bridge / processor adapter
+  integration/              Processor bridge, no-frills GUI shell
+  tools/                    privacy_source_audit, offline_cmake_audit
+  docs/                     Status, triage, release gates, Tier 3 complete
+
+--------------------------------------------------------------------------------
+FEATURE SUMMARY
+--------------------------------------------------------------------------------
+  [x] BusGraph cycle/gain validation
+  [x] ParameterQueue SPSC (non-blocking full)
+  [x] PreallocatedBusProcessor (no-alloc process)
+  [x] RealtimeBusEngine + StereoScratch
+  [x] PathSandbox (session jail, reject ..)
+  [x] Tier 3 daw_core + hush-session CLI
+  [x] Composer neural-lite (offline)
+  [x] Privacy denylist + offline CMake audits
+  [x] No external DAW checker dependency
+  [ ] Live ALSA soak          (not_run — hardware)
+  [ ] ONNX neural backend     (not_run — optional package)
+
+--------------------------------------------------------------------------------
+BUILD CONTRACT
+--------------------------------------------------------------------------------
+  Offline-first: FETCHCONTENT_FULLY_DISCONNECTED=ON
+  No FetchContent / ExternalProject / file(DOWNLOAD) in product CMake
+  Security posture: PathSandbox retained; Cosmic de-hardening not imported
+  Relationship: hush-daw = canonical; Cosmic Studio = de-hardened public fork
+
+--------------------------------------------------------------------------------
+QUICK VERIFY (after unzip)
+--------------------------------------------------------------------------------
+  cmake -S hush-daw-align -B build -DCMAKE_BUILD_TYPE=Release \
+    -DHUSH_BUILD_TIER3=ON -DHUSH_BUILD_COMPOSER=ON -DHUSH_USE_STUBS=ON
+  cmake --build build --parallel
+  ctest --test-dir build --output-on-failure
+
+--------------------------------------------------------------------------------
+END OF RECEIPT
+================================================================================
